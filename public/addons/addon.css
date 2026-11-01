@@ -1,0 +1,573 @@
+/* Bird-chat addon layer — injected via public/index.html.
+   Scoped under .bca- so it never clashes with the React app styles. */
+
+#bca-root { display: contents; }
+
+@keyframes bca-marquee {
+  from { transform: translateX(var(--bca-from, 100%)); }
+  to   { transform: translateX(var(--bca-to, -100%)); }
+}
+/* keep the app's own hover-to-pause behaviour after we override the animation */
+.marquee-container:hover .marquee-content { animation-play-state: paused !important; }
+
+/* ---------- theme tokens (auto light/dark) ---------- */
+.bca-root {
+  --bca-bg: #ffffff;
+  --bca-bg-soft: #f4f5f7;
+  --bca-card: #ffffff;
+  --bca-text: #1c1e21;
+  --bca-muted: #65676b;
+  --bca-border: #dcdfe3;
+  --bca-accent: #4361ee;
+  --bca-accent-soft: #e8edff;
+  --bca-danger: #d93025;
+  --bca-ok: #0f9d58;
+  --bca-shadow: 0 12px 32px rgba(0, 0, 0, .18);
+}
+.bca-root.bca-dark {
+  --bca-bg: rgba(20, 22, 26, .96);
+  --bca-bg-soft: #1b1e24;
+  --bca-card: #23262d;
+  --bca-text: #e8eaed;
+  --bca-muted: #9aa0a6;
+  --bca-border: #3a3f47;
+  --bca-accent: #7c93ff;
+  --bca-accent-soft: #2b3050;
+  --bca-danger: #ff6b60;
+  --bca-ok: #34c07c;
+  --bca-shadow: 0 12px 32px rgba(0, 0, 0, .55);
+}
+
+/* ---------- floating copy button ---------- */
+.bca-fab {
+  position: fixed;
+  right: 16px;
+  bottom: 96px;
+  z-index: 9000;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 999px;
+  background: var(--bca-accent);
+  color: #fff;
+  font: 600 14px/1 "Segoe UI", "Noto Sans Bengali", system-ui, sans-serif;
+  box-shadow: var(--bca-shadow);
+  cursor: pointer;
+  transition: transform .15s ease, filter .15s ease;
+}
+.bca-fab:hover { transform: translateY(-2px); filter: brightness(1.08); }
+.bca-fab:active { transform: translateY(0); }
+
+/* ---------- navbar copy button (looks native, sits with the other icons) ---------- */
+.bca-navcopy,
+.bca-navadmin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+}
+.bca-navcopy svg,
+.bca-navadmin svg { pointer-events: none; }
+
+/* ---------- popup (drops from the navbar copy button) ---------- */
+.bca-popup {
+  position: fixed;
+  right: 10px;
+  top: 56px;
+  z-index: 9001;
+  width: 300px;
+  max-width: calc(100vw - 24px);
+  background: var(--bca-card);
+  color: var(--bca-text);
+  border: 1px solid var(--bca-border);
+  border-radius: 16px;
+  box-shadow: var(--bca-shadow);
+  padding: 14px;
+  font: 14px/1.45 "Segoe UI", "Noto Sans Bengali", system-ui, sans-serif;
+  animation: bca-pop .18s ease;
+}
+@keyframes bca-pop { from { opacity: 0; transform: translateY(8px); } }
+
+.bca-popup h3 { margin: 0 0 4px; font-size: 15px; font-weight: 700; }
+.bca-popup .bca-sub { margin: 0 0 10px; color: var(--bca-muted); font-size: 12.5px; }
+
+.bca-format {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.bca-format label {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1.5px solid var(--bca-border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color .12s ease, background .12s ease;
+}
+.bca-format label:hover { background: var(--bca-bg-soft); }
+.bca-format input { margin-top: 2px; accent-color: var(--bca-accent); }
+.bca-format label:has(input:checked) {
+  border-color: var(--bca-accent);
+  background: var(--bca-accent-soft);
+}
+.bca-format .bca-fmt-title { font-weight: 700; font-size: 13.5px; }
+.bca-format .bca-fmt-desc { color: var(--bca-muted); font-size: 12px; }
+
+.bca-actions { display: flex; gap: 8px; }
+.bca-btn {
+  flex: 1;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 10px;
+  font: 600 13.5px/1 inherit;
+  font-family: inherit;
+  cursor: pointer;
+  background: var(--bca-accent);
+  color: #fff;
+  transition: filter .12s ease;
+}
+.bca-btn.ghost {
+  background: var(--bca-bg-soft);
+  color: var(--bca-text);
+  border: 1px solid var(--bca-border);
+}
+.bca-btn:hover { filter: brightness(1.08); }
+.bca-btn[disabled] { opacity: .6; cursor: wait; }
+
+.bca-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  border: none;
+  background: none;
+  color: var(--bca-muted);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+/* ---------- toast ---------- */
+.bca-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 100002;
+  background: var(--bca-text);
+  color: var(--bca-bg);
+  padding: 10px 18px;
+  border-radius: 999px;
+  font: 600 13.5px/1 "Segoe UI", "Noto Sans Bengali", system-ui, sans-serif;
+  box-shadow: var(--bca-shadow);
+  animation: bca-pop .2s ease;
+}
+.bca-toast.err { background: var(--bca-danger); color: #fff; }
+
+/* ---------- forced password-change modal ---------- */
+.bca-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(8, 10, 14, .62);
+  backdrop-filter: blur(4px);
+}
+.bca-modal {
+  width: 380px;
+  max-width: 100%;
+  background: var(--bca-card);
+  color: var(--bca-text);
+  border-radius: 18px;
+  border: 1px solid var(--bca-border);
+  box-shadow: var(--bca-shadow);
+  padding: 22px;
+  font: 14px/1.5 "Segoe UI", "Noto Sans Bengali", system-ui, sans-serif;
+  animation: bca-pop .2s ease;
+}
+.bca-modal .bca-shield {
+  width: 52px; height: 52px;
+  border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 26px;
+  background: var(--bca-accent-soft);
+  margin-bottom: 12px;
+}
+.bca-modal h2 { margin: 0 0 6px; font-size: 18px; font-weight: 800; }
+.bca-modal .bca-sub { margin: 0 0 16px; color: var(--bca-muted); font-size: 13px; }
+.bca-field { margin-bottom: 12px; }
+.bca-field label { display: block; font-size: 12.5px; font-weight: 700; margin-bottom: 5px; color: var(--bca-muted); }
+.bca-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1.5px solid var(--bca-border);
+  border-radius: 10px;
+  background: var(--bca-bg);
+  color: var(--bca-text);
+  font: 15px inherit;
+  outline: none;
+  transition: border-color .12s ease;
+}
+.bca-field input:focus { border-color: var(--bca-accent); }
+.bca-modal .bca-err {
+  display: none;
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bca-danger) 12%, transparent);
+  color: var(--bca-danger);
+  font-size: 13px;
+  font-weight: 600;
+}
+.bca-modal .bca-err.show { display: block; }
+.bca-modal .bca-btn { width: 100%; padding: 11px; font-size: 14.5px; }
+
+/* ---------- admin panel ---------- */
+.bca-popup.bca-admin { width: 330px; }
+
+.bca-setting { margin-bottom: 12px; }
+.bca-setting-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--bca-muted);
+  margin-bottom: 6px;
+}
+.bca-opts { display: flex; gap: 6px; }
+.bca-opts label {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border: 1.5px solid var(--bca-border);
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: border-color .12s ease, background .12s ease;
+}
+.bca-opts label:hover { background: var(--bca-bg-soft); }
+.bca-opts input { accent-color: var(--bca-accent); margin: 0; }
+.bca-opts label:has(input:checked) {
+  border-color: var(--bca-accent);
+  background: var(--bca-accent-soft);
+}
+
+.bca-userlist {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 210px;
+  overflow-y: auto;
+}
+.bca-userlist-note { color: var(--bca-muted); font-size: 12.5px; padding: 4px 2px; }
+.bca-user {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--bca-border);
+  border-radius: 10px;
+  background: var(--bca-bg-soft);
+}
+.bca-user-name {
+  font-weight: 700;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bca-badge {
+  flex: none;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--bca-accent-soft);
+  color: var(--bca-accent);
+}
+.bca-badge.suspended { background: color-mix(in srgb, var(--bca-danger) 14%, transparent); color: var(--bca-danger); }
+.bca-kick {
+  flex: none;
+  margin-inline-start: auto;
+  border: 1px solid var(--bca-border);
+  background: var(--bca-card);
+  color: var(--bca-danger);
+  font: 700 11.5px/1 inherit;
+  font-family: inherit;
+  padding: 5px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: filter .12s ease;
+}
+.bca-kick:hover { border-color: var(--bca-danger); }
+.bca-kick[disabled] { opacity: .45; cursor: not-allowed; }
+
+
+/* ============================================================
+   v3.0 additions — tabs, selected-user picker, attendance editor,
+   settings-page card (same theme tokens as above)
+   ============================================================ */
+
+/* ---------- tabs inside the admin panel ---------- */
+.bca-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 3px;
+  background: var(--bca-bg-soft);
+  border: 1px solid var(--bca-border);
+  border-radius: 10px;
+}
+.bca-tab {
+  flex: 1 1 0;
+  padding: 7px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--bca-muted);
+  font: 600 12px/1.25 "Segoe UI", "Noto Sans Bengali", system-ui, sans-serif;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bca-tab:hover { color: var(--bca-text); }
+.bca-tab.on {
+  background: var(--bca-card);
+  color: var(--bca-text);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .14);
+}
+.bca-tabpanel { min-height: 40px; }
+
+/* ---------- selected-user picker ---------- */
+.bca-picker {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1.5px dashed var(--bca-border);
+  border-radius: 12px;
+}
+.bca-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 2px 0 8px; }
+.bca-chips-empty { color: var(--bca-muted); font-size: 12px; }
+.bca-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 4px 3px 9px;
+  border-radius: 999px;
+  background: var(--bca-accent-soft);
+  color: var(--bca-accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+.bca-chip > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bca-chip-x {
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 999px;
+  cursor: pointer;
+  opacity: .75;
+}
+.bca-chip-x:hover { opacity: 1; }
+.bca-picker-entry { display: flex; gap: 6px; margin-bottom: 8px; }
+.bca-picker-entry input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1.5px solid var(--bca-border);
+  border-radius: 9px;
+  background: var(--bca-bg);
+  color: var(--bca-text);
+  font: 13px inherit;
+  outline: none;
+}
+.bca-picker-entry input:focus { border-color: var(--bca-accent); }
+.bca-picker-list {
+  max-height: 140px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 7px;
+  border-top: 1px solid var(--bca-border);
+}
+.bca-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 4px 5px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.bca-picker-item:hover { background: var(--bca-bg-soft); }
+.bca-picker-item input { accent-color: var(--bca-accent); margin: 0; }
+.bca-picker-item .bca-badge { margin-inline-start: auto; }
+
+.bca-mini {
+  padding: 7px 10px;
+  border: 1.5px solid var(--bca-border);
+  border-radius: 9px;
+  background: var(--bca-card);
+  color: var(--bca-text);
+  font: 700 12px/1 inherit;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: filter .12s ease;
+}
+.bca-mini:hover { background: var(--bca-bg-soft); }
+
+/* ---------- attendance counter ---------- */
+.bca-linkrow { display: flex; align-items: center; gap: 7px; margin: 2px 0 6px; min-width: 0; }
+.bca-att-link {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--bca-accent);
+}
+.bca-hint { color: var(--bca-muted); font-size: 11.5px; line-height: 1.5; }
+.bca-editor {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 190px;
+  max-height: 46vh;
+  margin: 2px 0 6px;
+  padding: 10px;
+  border: 1.5px solid var(--bca-border);
+  border-radius: 10px;
+  background: var(--bca-bg);
+  color: var(--bca-text);
+  font: 12px/1.55 ui-monospace, Consolas, monospace;
+  resize: vertical;
+  outline: none;
+}
+.bca-editor:focus { border-color: var(--bca-accent); }
+.bca-editor-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bca-editor-count { color: var(--bca-muted); font-size: 11.5px; margin-inline-end: auto; }
+.bca-editor-count.over { color: var(--bca-danger); font-weight: 800; }
+.bca-editor-msg { color: var(--bca-muted); font-size: 11.5px; }
+
+/* wider admin panel: 3 tabs + pickers need the room */
+.bca-popup.bca-admin {
+  width: 440px;
+  max-height: min(84vh, 760px);
+  overflow-y: auto;
+}
+@media (max-width: 480px) {
+  .bca-popup.bca-admin { width: calc(100vw - 16px); right: 8px; top: 52px; }
+  .bca-tab { font-size: 11px; padding: 6px 4px; }
+  .bca-editor { min-height: 150px; }
+}
+
+/* ---------- leftover hooks (containers/labels with no visual of their own) ---------- */
+.bca-users { margin-top: 4px; }
+.bca-opts-slot, .bca-picker-slot { display: block; }
+.bca-picker-slot { margin-top: 10px; }
+.bca-att-view-label, .bca-att-link-label, .bca-att-editor-label { display: block; }
+.bca-att-note { margin-top: 2px; }
+/* html format option can be hidden by the addon on legacy backends */
+.bca-fmt-html { display: flex; }
+
+/* ---------- emoji set pane (admin panel) ---------- */
+.bca-emoji-search {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 6px 0;
+  padding: 7px 10px;
+  border: 1.5px solid var(--bca-border);
+  border-radius: 9px;
+  background: var(--bca-bg);
+  color: var(--bca-text);
+  font: 13px inherit;
+  outline: none;
+}
+.bca-emoji-search:focus { border-color: var(--bca-accent); }
+.bca-emoji-cats {
+  display: flex;
+  gap: 3px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.bca-emoji-cat {
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  border: 1.5px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: .6;
+}
+.bca-emoji-cat:hover { opacity: 1; background: var(--bca-bg-soft); }
+.bca-emoji-cat.on {
+  opacity: 1;
+  border-color: var(--bca-accent);
+  background: var(--bca-accent-soft);
+}
+.bca-emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 3px;
+  max-height: 168px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--bca-border);
+  border-radius: 10px;
+}
+.bca-emoji {
+  aspect-ratio: 1;
+  border: 1.5px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.bca-emoji:hover { background: var(--bca-bg-soft); }
+.bca-emoji.on {
+  border-color: var(--bca-accent);
+  background: var(--bca-accent-soft);
+}
+@media (max-width: 420px) {
+  .bca-emoji-grid { grid-template-columns: repeat(7, 1fr); }
+}
+
+/* ---------- reaction "+" and the popup picker ---------- */
+.bca-react-plus {
+  margin: 2px;
+  flex: 0 0 auto;
+  font-weight: 700;
+  line-height: 1;
+}
+.bca-popup.bca-react-pop {
+  width: 320px;
+  top: auto;
+  right: auto;
+}
+.bca-popup.bca-react-pop .bca-emoji-grid { max-height: 200px; }

@@ -1,0 +1,196 @@
+/* Fullscreen login notice — styles for the standalone fsnotice.js addon.
+   Scoped under .bca-fs* so it never clashes with the React app or the main
+   addon layer. Black fullscreen DIV (no iframe), mobile-friendly: inset:0 +
+   100dvh (iOS-safe), body scroll lock, safe-area aware OK bar. */
+
+#bca-fs-root { display: contents; }
+
+/* body scroll lock while the overlay is open */
+body.bca-fslock { overflow: hidden !important; }
+
+/* ---------- fullscreen overlay ---------- */
+.bca-fsoverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200000; /* above the main addon overlay (100000) and toast (100002) */
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  color: #fff;
+  font: 15px/1.55 "Segoe UI", "Noto Sans Bengali", system-ui, sans-serif;
+}
+
+/* scrollable notice area — fills everything above the OK bar */
+.bca-fscontent {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+}
+
+/* the notice itself: tall content starts at the TOP and scrolls normally;
+   short content floats to the vertical middle (auto margins in flex) */
+.bca-fsinner {
+  margin: auto;
+  padding: 28px 18px calc(24px + env(safe-area-inset-bottom));
+  max-width: 900px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* the admin's html keeps the fullscreen black context readable by default */
+.bca-fsinner a { color: #9ec1ff; }
+.bca-fsinner img, .bca-fsinner video, .bca-fsinner audio { max-width: 100%; height: auto; }
+.bca-fsinner table { max-width: 100%; }
+
+/* ---------- bottom bar with the OK button ---------- */
+.bca-fsbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  background: rgba(0, 0, 0, .88);
+  border-top: 1px solid rgba(255, 255, 255, .14);
+}
+.bca-fsok {
+  flex: 0 0 auto;
+  padding: 11px 26px;
+  border: none;
+  border-radius: 999px;
+  background: #4361ee;
+  color: #fff;
+  font: 700 15px/1 inherit;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(67, 97, 238, .45);
+  transition: transform .15s ease, filter .15s ease;
+}
+.bca-fsok:hover { transform: translateY(-1px); filter: brightness(1.08); }
+.bca-fsok:active { transform: translateY(0); }
+
+@media (max-width: 600px) {
+  .bca-fsinner { padding: 20px 14px calc(18px + env(safe-area-inset-bottom)); }
+  .bca-fsbar { justify-content: stretch; }
+  .bca-fsok { flex: 1 1 auto; width: 100%; padding: 13px 20px; }
+}
+
+/* ---------- admin editor popup ---------- */
+.bca-fspopup {
+  position: fixed;
+  top: 56px;
+  right: 10px;
+  z-index: 100001; /* under the overlay, above the app */
+  width: min(640px, calc(100vw - 20px));
+  max-height: min(72vh, 640px);
+  overflow-y: auto;
+  background: #fff;
+  color: #1c1e21;
+  border: 1px solid #dcdfe3;
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .25);
+  padding: 16px;
+  font: 14px/1.5 "Segoe UI", "Noto Sans Bengali", system-ui, sans-serif;
+}
+.bca-fspopup h3 { margin: 0 0 10px; font-size: 16px; font-weight: 800; padding-right: 30px; }
+.bca-fsclose {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  border: none;
+  background: transparent;
+  color: #65676b;
+  font-size: 17px;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.bca-fssetting { display: flex; flex-direction: column; gap: 8px; }
+.bca-fslabel { font-size: 12.5px; font-weight: 700; color: #65676b; }
+.bca-fshint2 { font-size: 12px; color: #8a8f98; }
+.bca-fseditor {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 180px;
+  resize: vertical;
+  font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 10px 12px;
+  border: 1.5px solid #dcdfe3;
+  border-radius: 10px;
+  background: #f7f8fa;
+  color: inherit;
+  outline: none;
+  white-space: pre;
+}
+.bca-fseditor:focus { border-color: #4361ee; background: #fff; }
+.bca-fsbar2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bca-fscount { font-size: 12px; color: #65676b; }
+.bca-fscount.over { color: #d93025; font-weight: 700; }
+.bca-fsmsg { font-size: 12.5px; font-weight: 600; color: #0f9d58; }
+.bca-fssave {
+  margin-left: auto;
+  padding: 9px 16px;
+  border: none;
+  border-radius: 10px;
+  background: #4361ee;
+  color: #fff;
+  font: 700 13.5px/1 inherit;
+  font-family: inherit;
+  cursor: pointer;
+}
+.bca-fssave:disabled { opacity: .6; cursor: default; }
+.bca-fsmini {
+  padding: 8px 12px;
+  border: 1px solid #c9d1da;
+  border-radius: 10px;
+  background: #fff;
+  color: #1c1e21;
+  font: 600 13px/1 inherit;
+  font-family: inherit;
+  cursor: pointer;
+}
+.bca-fsmini:hover { background: #f2f4f7; }
+
+/* ---------- /admin page card (beside the app's notice card) ---------- */
+.bca-fsadmincard { height: 100%; }
+.bca-fsadmincard .bca-fsbadge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  vertical-align: middle;
+  background: #4361ee;
+  color: #fff;
+}
+.bca-fsadmincard .bca-fscardtitle { vertical-align: middle; }
+.bca-fsadmincard .bca-fseditor { background: #fff; }
+.bca-fsadmincard .bca-fseditor:focus { background: #fff; }
+
+/* dark mode: the app puts .bg-dark on the navbar — follow it so the card
+   is NOT a white slab inside the dark admin page */
+body.bca-fs-dark .bca-fsadmincard {
+  background: #1e2127;
+  color: #e8eaed;
+  border-color: #3a3f47;
+}
+body.bca-fs-dark .bca-fsadmincard .card-body { color: inherit; }
+body.bca-fs-dark .bca-fsadmincard .bca-fslabel { color: #9aa0a6; }
+body.bca-fs-dark .bca-fsadmincard .bca-fshint2 { color: #8a8f98; }
+body.bca-fs-dark .bca-fsadmincard .bca-fseditor {
+  background: #14161a;
+  color: #e8eaed;
+  border-color: #3a3f47;
+}
+body.bca-fs-dark .bca-fsadmincard .bca-fseditor:focus { border-color: #7c93ff; background: #14161a; }
+body.bca-fs-dark .bca-fsadmincard .bca-fscount { color: #9aa0a6; }
+body.bca-fs-dark .bca-fsadmincard .bca-fsmsg { color: #34c07c; }
+body.bca-fs-dark .bca-fsadmincard .bca-fsmini {
+  background: #23262d;
+  color: #e8eaed;
+  border-color: #3a3f47;
+}
+body.bca-fs-dark .bca-fsadmincard .bca-fsmini:hover { background: #2b3037; }
+body.bca-fs-dark .bca-fsadmincard .bca-fssave { background: #4361ee; }

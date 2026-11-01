@@ -1,0 +1,42 @@
+# Render Blueprint for "Our Discussion Room"
+# Deploy: push this folder to GitHub → Render → New → Blueprint → pick the repo.
+# Fill in the `sync: false` values in the Render dashboard after the first sync.
+services:
+  - type: web
+    name: discussion-room
+    runtime: node
+    plan: free
+    region: singapore # lowest latency from Bangladesh
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # session signing key — generated once by Render, keep it stable
+      - key: SESSION_SECRET
+        generateValue: true
+      # storage backend: users/settings/messages all live in encrypted gists
+      - key: REPOSITORY_NAME
+        value: githubGistStorage
+      - key: githubGist_token
+        sync: false # personal access token with "gist" scope
+      - key: githubGist_username
+        sync: false # your GitHub username
+      - key: encryption_password
+        sync: false # strong password — encrypts the gist contents
+      # optional: set a unique id (e.g. room-b) to open a separate room on the
+      # same GitHub account — each APP_ID maps to its own set of gists.
+      # leave empty for the original room.
+      - key: APP_ID
+        sync: false
+      # optional knobs (defaults shown)
+      - key: GIST_SHARD_BYTES
+        value: "500000"
+      - key: MAX_MESSAGE_CHARS
+        value: "5000"
+      - key: MAX_NOTICE_CHARS
+        value: "20000"
+      - key: HIJRI_TIMEZONE
+        value: Asia/Dhaka
