@@ -72,6 +72,8 @@ router.put("/chat/admin-settings", SettingController_1.saveAdminSettings);
 router.get("/chat/admin-settings", SettingController_1.getAdminSettings);
 // attendance counter — the admin edits the raw html, GET /attendance renders it
 router.get("/chat/attendance", SettingController_1.getAttendanceSettings);
+// message-store switch status (admin): where new messages currently persist
+router.get("/chat/messageStoreMode", SettingController_1.getMessageStoreMode);
 router.put("/chat/attendance", SettingController_1.saveAttendanceHtml);
 router.put("/chat/enable", SettingController_1.enableChat);
 router.put("/chat/disable", SettingController_1.disableChat);

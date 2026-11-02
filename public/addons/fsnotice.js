@@ -50,6 +50,13 @@
       fetchFail: "Couldn't load data",
       chars: "chars",
       cardBadge: "addon",
+      okLabelLabel: "Button text (empty = \"Understood\")",
+      modeLabel: "Message storage (server speed)",
+      modeGist: "GitHub Gist — durable (slower)",
+      modeMemory: "RAM — fast (messages lost on redeploy)",
+      modeHint: "Users & settings always stay on the Gist in both modes.",
+      modeSaved: "✓ Storage mode saved",
+      okLabelLabel: "Button text (empty = \"Understood\")",
     },
     bn: {
       ok: "বুঝেছি",
@@ -69,6 +76,13 @@
       fetchFail: "তথ্য আনা যায়নি",
       chars: "অক্ষর",
       cardBadge: "অ্যাড-অন",
+      okLabelLabel: "বাটনের লেখা (খালি = “বুঝেছি”)",
+      modeLabel: "মেসেজ স্টোরেজ (সার্ভার গতি)",
+      modeGist: "GitHub Gist — স্থায়ী (ধীর)",
+      modeMemory: "RAM — দ্রুত (রিডিপ্লয়ে মেসেজ মুছে যাবে)",
+      modeHint: "দুই অবস্থাতেই ইউজার ও সেটিংস Gist-এই থাকবে।",
+      modeSaved: "✓ স্টোরেজ মোড সেভ হয়েছে",
+      okLabelLabel: "বাটনের লেখা (খালি = “বুঝেছি”)",
     },
   };
   const S = () => STRINGS[curLang()];
@@ -114,7 +128,7 @@
     document.body.classList.remove("bca-fslock");
   }
 
-  function showOverlay(html) {
+  function showOverlay(html, okLabel) {
     closeOverlay();
     const overlay = document.createElement("div");
     overlay.className = "bca-fsoverlay";
@@ -122,20 +136,32 @@
     overlay.setAttribute("aria-modal", "true");
     overlay.innerHTML = `
       <div class="bca-fscontent"><div class="bca-fsinner"></div></div>
-      <div class="bca-fsbar">
+      <div class="bca-fsbar" hidden>
         <button type="button" class="bca-fsok"></button>
       </div>`;
     const okBtn = overlay.querySelector(".bca-fsok");
-    okBtn.textContent = S().ok;
+    okBtn.textContent = okLabel || S().okDefault;
     okBtn.addEventListener("click", closeOverlay);
     const inner = overlay.querySelector(".bca-fsinner");
     // admin-authored raw html/css/js — the SAME trust decision as the
     // attendance counter page (server stores it raw, only admins write)
     inner.innerHTML = html;
     activateScripts(inner);
+    // the button lives INSIDE the scrolling content, right after the notice
+    // (not pinned to the screen bottom); the fixed bar only appears for
+    // very long notices so a button is always reachable
+    const content = overlay.querySelector(".bca-fscontent");
+    const bar = overlay.querySelector(".bca-fsbar");
+    const tail = document.createElement("div");
+    tail.className = "bca-fstail";
+    tail.appendChild(okBtn);
+    inner.appendChild(tail);
     host().appendChild(overlay);
     document.body.classList.add("bca-fslock");
-    // tall notice → starts at the TOP and scrolls down to read; short
+    requestAnimationFrame(() => {
+      if (content.scrollHeight > content.clientHeight + 40) bar.hidden = false;
+    });
+    // tall notice → starts at the TOP and scrolls down to the button; short
     // notice → the CSS auto-margins center it vertically inside the div
   }
 
@@ -146,6 +172,8 @@
     fsNoticeCache = {
       notice: typeof got.body.notice === "string" ? got.body.notice : "",
       updatedAt: got.body.updatedAt || "",
+      okLabel: typeof got.body.okLabel === "string" ? got.body.okLabel.slice(0, 60) : "",
+      messageStoreMode: got.body.messageStoreMode === "gist" ? "gist" : "memory",
     };
     return fsNoticeCache;
   }
@@ -164,7 +192,7 @@
     if (loginAt && fsSeenLoginAt() === loginAt) return;
     shownFor = loginAt;
     markFsSeen(loginAt);
-    showOverlay(html);
+    showOverlay(fsNoticeCache.notice, fsNoticeCache.okLabel);
   }
 
   // ---------- socket (live refresh while the overlay is open) ----------
@@ -199,6 +227,14 @@
       <div class="bca-fslabel"></div>
       <div class="bca-fshint2"></div>
       <textarea class="bca-fseditor" spellcheck="false" wrap="off"></textarea>
+      <div class="bca-fslabel bca-fsoklabel-label"></div>
+      <input type="text" class="bca-fsoklabel" maxlength="60" />
+      <div class="bca-fslabel bca-fsmodelabel"></div>
+      <div class="bca-fsmodeswitch">
+        <label class="bca-fsmodeopt"><input type="radio" name="bca-fs-storemode" value="gist" /><span class="bca-fsmodegist"></span></label>
+        <label class="bca-fsmodeopt"><input type="radio" name="bca-fs-storemode" value="memory" /><span class="bca-fsmodememory"></span></label>
+      </div>
+      <div class="bca-fshint2 bca-fsmodehint"></div>
       <div class="bca-fsbar2">
         <span class="bca-fscount"></span>
         <span class="bca-fsmsg"></span>
@@ -208,6 +244,14 @@
       </div>`;
     box.querySelector(".bca-fslabel").textContent = s.editorLabel;
     box.querySelector(".bca-fshint2").textContent = s.editorHint;
+    const okLabelInput = box.querySelector(".bca-fsoklabel");
+    box.querySelector(".bca-fsoklabel-label").textContent = s.okLabelLabel;
+    okLabelInput.placeholder = s.okDefault;
+    box.querySelector(".bca-fsmodelabel").textContent = s.modeLabel;
+    box.querySelector(".bca-fsmodegist").textContent = s.modeGist;
+    box.querySelector(".bca-fsmodememory").textContent = s.modeMemory;
+    box.querySelector(".bca-fsmodehint").textContent = s.modeHint;
+    const modeRadios = () => [...box.querySelectorAll('input[name="bca-fs-storemode"]')];
     const editor = box.querySelector(".bca-fseditor");
     const count = box.querySelector(".bca-fscount");
     const msg = box.querySelector(".bca-fsmsg");
@@ -224,8 +268,10 @@
     };
     editor.addEventListener("input", () => { paintCount(); msg.textContent = ""; });
 
-    const saveNow = async (overrideHtml) => {
+    const saveNow = async (overrideHtml, overrideOkLabel, overrideMode) => {
       const html = typeof overrideHtml === "string" ? overrideHtml : editor.value;
+      const okLabel = typeof overrideOkLabel === "string" ? overrideOkLabel : okLabelInput.value.trim();
+      const mode = typeof overrideMode === "string" ? overrideMode : (modeRadios().find((r) => r.checked)?.value || null);
       if (html.length > LIMIT) { msg.textContent = s.tooLarge; return false; }
       saveBtn.disabled = true;
       const label = saveBtn.textContent;
@@ -236,7 +282,7 @@
           method: "PUT",
           credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ notice: html }),
+          body: JSON.stringify({ notice: html, okLabel, ...(mode ? { messageStoreMode: mode } : {}) }),
         });
         if (res.status === 401) { msg.textContent = s.sessionExpired; return false; }
         if (!res.ok) {
@@ -247,7 +293,7 @@
         editor.value = html;
         paintCount();
         msg.textContent = s.saved;
-        fsNoticeCache = { notice: html, updatedAt: new Date().toISOString() };
+        fsNoticeCache = { notice: html, updatedAt: new Date().toISOString(), okLabel };
         return true;
       } catch {
         msg.textContent = s.noServer;
@@ -260,15 +306,29 @@
 
     saveBtn.addEventListener("click", () => saveNow());
     previewBtn.addEventListener("click", () => { if (editor.value.trim()) showOverlay(editor.value); });
+    modeRadios().forEach((radio) =>
+      radio.addEventListener("change", async () => {
+        const okNow = await saveNow(undefined, undefined, radio.value);
+        if (okNow) toast(s.modeSaved);
+      })
+    );
+
     clearBtn.addEventListener("click", async () => {
       if (!window.confirm(s.clearConfirm)) return;
       editor.value = "";
+      okLabelInput.value = "";
       paintCount();
-      await saveNow("");
+      await saveNow("", "");
     });
 
     refetchNotice().then(() => {
-      if (fsNoticeCache) { editor.value = fsNoticeCache.notice; paintCount(); }
+      if (fsNoticeCache) {
+        editor.value = fsNoticeCache.notice;
+        okLabelInput.value = fsNoticeCache.okLabel || "";
+        const mode = fsNoticeCache.messageStoreMode || "memory";
+        modeRadios().forEach((r) => { r.checked = r.value === mode; });
+        paintCount();
+      }
     });
   }
 

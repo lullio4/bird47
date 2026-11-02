@@ -10,7 +10,7 @@
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 const CryptoJS = require("crypto-js");
 const logger_1 = require("../logger.js");
-const FLUSH_INTERVAL_MS = parseInt(process.env.GIST_FLUSH_INTERVAL_MS || "5000", 10);
+const FLUSH_INTERVAL_MS = parseInt(process.env.GIST_FLUSH_INTERVAL_MS || "20000", 10);
 const LOAD_ATTEMPTS = parseInt(process.env.GIST_LOAD_ATTEMPTS || "8", 10);
 const GITHUB_API = "https://api.github.com";
 const log = (0, logger_1.default)(__filename);

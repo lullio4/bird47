@@ -7,6 +7,8 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getUserRepository = getUserRepository;
 exports.getMessageRepository = getMessageRepository;
 exports.getSettingRepository = getSettingRepository;
+exports.applyMessageStoreMode = applyMessageStoreMode;
+exports.currentMessageStoreMode = currentMessageStoreMode;
 const logger_1 = __importDefault(require("../logger.js"));
 const ClientError_1 = require("../models/ClientError.js");
 const Storage_1 = require("../models/storageTypes.js");
@@ -72,6 +74,10 @@ const messageStorage = process.env.MESSAGE_REPOSITORY || defaultStorage;
 let messageRepository;
 let settingRepository;
 let userRepository;
+// MODE_LIVE_TRACK: explicit live mode ("memory" | "gist") — cannot be
+// inferred from the repo class because the durable fallback may itself be
+// the disk repo when gist credentials are unavailable
+let messageStoreModeLive = "gist";
 function getUserRepository() {
     if (!userRepository) {
         userRepository = getRepository(Storage_1.StorageModels.User, defaultStorage);
@@ -89,4 +95,83 @@ function getSettingRepository() {
         settingRepository = getRepository(Storage_1.StorageModels.Setting, defaultStorage);
     }
     return settingRepository;
+}
+/**
+ * Admin switch: "memory" = new messages live in RAM only (fast — no message
+ * gist writes at all), "gist" = the normal durable sharded gists. User +
+ * Setting always persist on the gist in BOTH modes. Hot-swap is safe: the
+ * in-memory item array moves over wholesale, so history, order and id
+ * continuity survive; switching to gist flushes immediately, switching to
+ * memory just stops further message-gist writes (existing shards remain). */
+function applyMessageStoreMode(mode) {
+    if (mode !== "memory" && mode !== "gist")
+        return;
+    if (mode === "memory") {
+        // MODE_EARLYRET: gate on the tracked live mode (the boot repo may be
+        // disk even in gist mode; the durable fallback may be disk too)
+        if (messageStoreModeLive === "memory" && messageRepository instanceof DiskStorageRepositoryImpl_1.DiskStorageRepositoryImpl)
+            return; // already in memory mode
+        const old = messageRepository;
+        if (old && old.flushTimer) {
+            clearTimeout(old.flushTimer);
+            old.flushTimer = null;
+        }
+        // items currently in the gist repo move into the disk-backed repo's
+        // live array (its saveToFile is only called by add/update — which we
+        // do NOT call; memory mode persists nothing for messages)
+        const memRepo = getRepository(Storage_1.StorageModels.Message, Storage_1.StorageTypes.diskStorage);
+        if (old && Array.isArray(old.items)) {
+            memRepo.items = old.items;
+            memRepo.maxId = old.items.reduce((m, it) => Math.max(m, it.id || 0), 0);
+        }
+        messageRepository = memRepo;
+        messageStoreModeLive = "memory";
+        log.info("message store mode → memory (messages no longer written to gists)");
+        return;
+    }
+    // mode === "gist": swap back to a durable repo and flush now.
+    // MODE_GIST_FALLBACK: if the gist repo cannot be built (missing env /
+    // offline), fall back to the disk-backed repo so the switch never bricks
+    // the message pipeline; /api/chat/messageStoreMode reports the truth.
+    if (messageStoreModeLive === "gist" && !(messageRepository instanceof DiskStorageRepositoryImpl_1.DiskStorageRepositoryImpl)) {
+        messageStoreModeLive = "gist";
+        return; // already durable (non-disk repo + gist intent)
+    }
+    const mem = messageRepository;
+    let durableRepo = null;
+    try {
+        // MODE_GIST_TRYCATCH: getRepository throws ClientError on failure
+        durableRepo = getRepository(Storage_1.StorageModels.Message, Storage_1.StorageTypes.githubGistStorage);
+    }
+    catch (err) {
+        log.warn(`gist repo unavailable (${err?.message}) — falling back to disk storage for messages`);
+    }
+    if (!durableRepo) {
+        log.warn("gist repo unavailable (env/offline) — falling back to disk storage for messages");
+        durableRepo = getRepository(Storage_1.StorageModels.Message, Storage_1.StorageTypes.diskStorage);
+    }
+    if (!durableRepo) {
+        log.error("no durable message repo available — staying on current repo");
+        return;
+    }
+    if (mem && Array.isArray(mem.items) && mem.items.length) {
+        durableRepo.items = mem.items.slice();
+        durableRepo.maxId = durableRepo.items.reduce((m, it) => Math.max(m, it.id || 0), 0);
+        if (typeof durableRepo.rebuildShards === "function")
+            durableRepo.rebuildShards();
+        messageRepository = durableRepo;
+        messageStoreModeLive = "gist";
+        log.info(`message store mode → durable (flushing ${durableRepo.items.length} messages)`);
+        // FLUSH_GUARD: disk repo writes synchronously (no flush); gist repos flush async
+        if (typeof durableRepo.flush === "function")
+            durableRepo.flush().catch(() => { /* logged in flush() */ });
+    }
+    else {
+        messageRepository = durableRepo;
+        messageStoreModeLive = "gist";
+        log.info("message store mode → durable");
+    }
+}
+function currentMessageStoreMode() {
+    return messageStoreModeLive;
 }

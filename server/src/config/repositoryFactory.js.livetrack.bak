@@ -1,0 +1,166 @@
+"use strict";
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getUserRepository = getUserRepository;
+exports.getMessageRepository = getMessageRepository;
+exports.getSettingRepository = getSettingRepository;
+exports.applyMessageStoreMode = applyMessageStoreMode;
+exports.currentMessageStoreMode = currentMessageStoreMode;
+const logger_1 = __importDefault(require("../logger.js"));
+const ClientError_1 = require("../models/ClientError.js");
+const Storage_1 = require("../models/storageTypes.js");
+const DiskStorageRepositoryImpl_1 = require("../repositories/DiskStorageRepositoryImpl.js");
+const PtStorageRepositoryImpl_1 = require("../repositories/PtStorageRepositoryImpl.js");
+const MemoryGistRepository_1 = require("../repositories/MemoryGistRepository.js");
+const ShardedGistMessageRepository_1 = require("../repositories/ShardedGistMessageRepository.js");
+const log = (0, logger_1.default)(__filename);
+// singeleton idea:
+// https://stackoverflow.com/questions/1479319/simplest-cleanest-way-to-implement-a-singleton-in-javascript
+function getRepository(storageModel, storageType) {
+    let repository = null;
+    if (!repository) {
+        log.info(`initializing repository for model  ${storageModel}`);
+        try {
+            switch (storageType) {
+                case Storage_1.StorageTypes.ptStorage: {
+                    log.info(`Pt has been chosen as the default repository for: ${storageModel}`);
+                    const siteId = process.env.PT_SITE_ID ?? "";
+                    const sitePassword = process.env.PT_SITE_PASSWORD ?? "";
+                    repository = new PtStorageRepositoryImpl_1.PtStorageRepositoryImpl(siteId, sitePassword, storageModel);
+                    break;
+                }
+                case Storage_1.StorageTypes.diskStorage:
+                    log.info(`Disk Storage has been chosen as the default repository for: ${storageModel}`);
+                    repository = new DiskStorageRepositoryImpl_1.DiskStorageRepositoryImpl(storageModel);
+                    break;
+                case Storage_1.StorageTypes.githubGistStorage: {
+                    log.info(`githubGist Storage has been chosen as the repository for: ${storageModel}`);
+                    const githubGist_token = process.env.githubGist_token ?? "";
+                    const githubGist_username = process.env.githubGist_username ?? "";
+                    const encryption_password = process.env.encryption_password ?? "";
+                    if (!githubGist_token || !githubGist_username) {
+                        log.error("githubGist_token / githubGist_username env vars are required for githubGistStorage");
+                        break;
+                    }
+                    const credentials = { token: githubGist_token, username: githubGist_username };
+                    // messages grow without bound → sharded gists; User/Setting stay single-file
+                    repository = storageModel === Storage_1.StorageModels.Message
+                        ? new ShardedGistMessageRepository_1.ShardedGistMessageRepository(credentials, storageModel, encryption_password)
+                        : new MemoryGistRepository_1.MemoryGistRepository(credentials, storageModel, encryption_password);
+                    break;
+                }
+                default:
+                    log.error(`Invalid repository name: ${storageType}`);
+            }
+        }
+        catch (error) {
+            log.error(`Error creating repository: ${error.message}`);
+        }
+    }
+    if (!repository) {
+        log.error("Could not instantiate repository");
+        // we throw a "connection failed" error, since we have observed that
+        // such errors can be caused by connection issues.
+        throw ClientError_1.ClientError.connectionFailedError();
+    }
+    return repository;
+}
+const defaultStorage = process.env.REPOSITORY_NAME || Storage_1.StorageTypes.diskStorage;
+// messages may live on a different backend than users/settings
+const messageStorage = process.env.MESSAGE_REPOSITORY || defaultStorage;
+let messageRepository;
+let settingRepository;
+let userRepository;
+function getUserRepository() {
+    if (!userRepository) {
+        userRepository = getRepository(Storage_1.StorageModels.User, defaultStorage);
+    }
+    return userRepository;
+}
+function getMessageRepository() {
+    if (!messageRepository) {
+        messageRepository = getRepository(Storage_1.StorageModels.Message, messageStorage);
+    }
+    return messageRepository;
+}
+function getSettingRepository() {
+    if (!settingRepository) {
+        settingRepository = getRepository(Storage_1.StorageModels.Setting, defaultStorage);
+    }
+    return settingRepository;
+}
+/**
+ * Admin switch: "memory" = new messages live in RAM only (fast — no message
+ * gist writes at all), "gist" = the normal durable sharded gists. User +
+ * Setting always persist on the gist in BOTH modes. Hot-swap is safe: the
+ * in-memory item array moves over wholesale, so history, order and id
+ * continuity survive; switching to gist flushes immediately, switching to
+ * memory just stops further message-gist writes (existing shards remain). */
+function applyMessageStoreMode(mode) {
+    if (mode !== "memory" && mode !== "gist")
+        return;
+    if (mode === "memory") {
+        if (messageRepository instanceof DiskStorageRepositoryImpl_1.DiskStorageRepositoryImpl)
+            return; // already in memory mode
+        const old = messageRepository;
+        if (old && old.flushTimer) {
+            clearTimeout(old.flushTimer);
+            old.flushTimer = null;
+        }
+        // items currently in the gist repo move into the disk-backed repo's
+        // live array (its saveToFile is only called by add/update — which we
+        // do NOT call; memory mode persists nothing for messages)
+        const memRepo = getRepository(Storage_1.StorageModels.Message, Storage_1.StorageTypes.diskStorage);
+        if (old && Array.isArray(old.items)) {
+            memRepo.items = old.items;
+            memRepo.maxId = old.items.reduce((m, it) => Math.max(m, it.id || 0), 0);
+        }
+        messageRepository = memRepo;
+        log.info("message store mode → memory (messages no longer written to gists)");
+        return;
+    }
+    // mode === "gist": swap back to a durable repo and flush now.
+    // MODE_GIST_FALLBACK: if the gist repo cannot be built (missing env /
+    // offline), fall back to the disk-backed repo so the switch never bricks
+    // the message pipeline; /api/chat/messageStoreMode reports the truth.
+    if (messageRepository && !(messageRepository instanceof DiskStorageRepositoryImpl_1.DiskStorageRepositoryImpl))
+        return; // already durable
+    const mem = messageRepository;
+    let durableRepo = null;
+    try {
+        // MODE_GIST_TRYCATCH: getRepository throws ClientError on failure
+        durableRepo = getRepository(Storage_1.StorageModels.Message, Storage_1.StorageTypes.githubGistStorage);
+    }
+    catch (err) {
+        log.warn(`gist repo unavailable (${err?.message}) — falling back to disk storage for messages`);
+    }
+    if (!durableRepo) {
+        log.warn("gist repo unavailable (env/offline) — falling back to disk storage for messages");
+        durableRepo = getRepository(Storage_1.StorageModels.Message, Storage_1.StorageTypes.diskStorage);
+    }
+    if (!durableRepo) {
+        log.error("no durable message repo available — staying on current repo");
+        return;
+    }
+    if (mem && Array.isArray(mem.items) && mem.items.length) {
+        durableRepo.items = mem.items.slice();
+        durableRepo.maxId = durableRepo.items.reduce((m, it) => Math.max(m, it.id || 0), 0);
+        if (typeof durableRepo.rebuildShards === "function")
+            durableRepo.rebuildShards();
+        messageRepository = durableRepo;
+        log.info(`message store mode → durable (flushing ${durableRepo.items.length} messages)`);
+        // FLUSH_GUARD: disk repo writes synchronously (no flush); gist repos flush async
+        if (typeof durableRepo.flush === "function")
+            durableRepo.flush().catch(() => { /* logged in flush() */ });
+    }
+    else {
+        messageRepository = durableRepo;
+        log.info("message store mode → durable");
+    }
+}
+function currentMessageStoreMode() {
+    return messageRepository instanceof DiskStorageRepositoryImpl_1.DiskStorageRepositoryImpl ? "memory" : "gist";
+}

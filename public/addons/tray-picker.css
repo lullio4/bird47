@@ -1,0 +1,112 @@
+/* Plus-reaction picker (tray-picker.js) — full standalone styles.
+   Scoped .bca-t* so nothing else is affected. The popup is position:fixed
+   and anchored next to the "+" button via explicit left/top from JS, so it
+   always appears beside the button (never drops into the page flow). */
+#bca-t-root { display: contents; }
+
+.bca-tpop {
+  position: fixed;
+  z-index: 100010;
+  width: 340px;
+  max-width: calc(100vw - 16px);
+  height: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #ffffff;
+  color: #1c1e21;
+  border: 1px solid #dcdfe3;
+  border-radius: 14px;
+  box-shadow: 0 14px 38px rgba(0, 0, 0, .28);
+  padding: 10px;
+  box-sizing: border-box;
+  font: 14px/1.4 "Segoe UI", "Noto Sans Bengali", system-ui, sans-serif;
+  overflow: hidden;
+}
+.bca-tsearch {
+  flex: 0 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  border: 1.5px solid #dcdfe3;
+  border-radius: 10px;
+  background: #f7f8fa;
+  color: inherit;
+  font: inherit;
+  outline: none;
+}
+.bca-tsearch:focus { border-color: #4361ee; background: #fff; }
+
+.bca-tcats {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding-bottom: 2px;
+}
+.bca-tcat {
+  flex: 0 0 auto;
+  border: 1px solid #dcdfe3;
+  background: #fff;
+  color: #1c1e21;
+  border-radius: 999px;
+  font: 600 12px/1 inherit;
+  font-family: inherit;
+  padding: 5px 10px;
+  cursor: pointer;
+  text-transform: capitalize;
+}
+.bca-tcat:hover { background: #f2f4f7; }
+
+.bca-tgrid {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  align-content: start;
+  padding-right: 2px;
+  scrollbar-width: thin;
+}
+.bca-tcat-head {
+  grid-column: 1 / -1;
+  font: 700 11.5px/1.6 inherit;
+  color: #8a8f98;
+  text-transform: capitalize;
+  padding: 6px 4px 2px;
+}
+.bca-temoji {
+  border: none;
+  background: transparent;
+  font-size: 21px;
+  line-height: 1.25;
+  padding: 3px 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.bca-temoji:hover { background: #eef1ff; }
+.bca-tnone { grid-column: 1 / -1; color: #8a8f98; font-size: 13px; padding: 10px 4px; }
+
+/* dark mode (the app puts .bg-dark on its navbar) */
+body.bca-fs-dark .bca-tpop {
+  background: #1e2127;
+  color: #e8eaed;
+  border-color: #3a3f47;
+}
+body.bca-fs-dark .bca-tsearch { background: #14161a; border-color: #3a3f47; color: #e8eaed; }
+body.bca-fs-dark .bca-tsearch:focus { border-color: #7c93ff; }
+body.bca-fs-dark .bca-tcat { background: #23262d; color: #e8eaed; border-color: #3a3f47; }
+body.bca-fs-dark .bca-tcat:hover { background: #2b3037; }
+body.bca-fs-dark .bca-tcat-head { color: #9aa0a6; }
+body.bca-fs-dark .bca-temoji:hover { background: #2b3050; }
+body.bca-fs-dark .bca-tnone { color: #9aa0a6; }
+
+@media (max-width: 600px) {
+  .bca-tpop {
+    width: calc(100vw - 16px);
+    height: min(420px, 60vh);
+  }
+  .bca-tgrid { grid-template-columns: repeat(7, 1fr); }
+}

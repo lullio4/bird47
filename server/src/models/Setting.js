@@ -28,6 +28,8 @@ const SETTING_LIMITS = {
     attendanceHtml: 300000,
     /** UI-editable html/css/js for the fullscreen login notice (raw, not sanitized) */
     fsNotice: 100000,
+    /** fullscreen-notice confirm button label (plain text, short) */
+    fsNoticeOkLabel: 60,
     /** one username entry */
     username: 50,
     /** members of a selected-users list */
@@ -166,6 +168,12 @@ class Setting extends BaseModel_1.BaseModel {
     fsNotice;
     /** ISO timestamp of the last fullscreen-notice save ("" = never) */
     fsNoticeUpdatedAt;
+    /** custom text for the fullscreen-notice confirm button ("" = default) */
+    fsNoticeOkLabel;
+    /** where new chat messages persist: "gist" (durable, slower) | "memory"
+        (server-local, fast — lost on restart/redeploy). User+Setting always
+        persist in the gist regardless. */
+    messageStoreMode;
     constructor(json = {}) {
         super(json);
         this.notice = json.notice || "";
@@ -198,6 +206,8 @@ class Setting extends BaseModel_1.BaseModel {
             ? json.fsNotice.slice(0, SETTING_LIMITS.fsNotice)
             : "";
         this.fsNoticeUpdatedAt = typeof json.fsNoticeUpdatedAt === "string" ? json.fsNoticeUpdatedAt : "";
+        this.fsNoticeOkLabel = typeof json.fsNoticeOkLabel === "string" ? json.fsNoticeOkLabel.slice(0, SETTING_LIMITS.fsNoticeOkLabel) : "";
+        this.messageStoreMode = json.messageStoreMode === "gist" ? "gist" : "memory";
     }
 }
 exports.Setting = Setting;

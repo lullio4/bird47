@@ -45557,7 +45557,7 @@ var require_BaseGistRepository = __commonJS({
     Object.defineProperty(exports2, "__esModule", { value: true });
     var CryptoJS = require_crypto_js();
     var logger_1 = require_logger2();
-    var FLUSH_INTERVAL_MS = parseInt(process.env.GIST_FLUSH_INTERVAL_MS || "5000", 10);
+    var FLUSH_INTERVAL_MS = parseInt(process.env.GIST_FLUSH_INTERVAL_MS || "20000", 10);
     var LOAD_ATTEMPTS = parseInt(process.env.GIST_LOAD_ATTEMPTS || "8", 10);
     var GITHUB_API = "https://api.github.com";
     var log = (0, logger_1.default)(__filename);
@@ -46328,6 +46328,8 @@ var require_repositoryFactory = __commonJS({
     exports2.getUserRepository = getUserRepository;
     exports2.getMessageRepository = getMessageRepository;
     exports2.getSettingRepository = getSettingRepository;
+    exports2.applyMessageStoreMode = applyMessageStoreMode;
+    exports2.currentMessageStoreMode = currentMessageStoreMode;
     var logger_1 = __importDefault(require_logger2());
     var ClientError_1 = require_ClientError();
     var Storage_1 = require_storageTypes();
@@ -46384,6 +46386,7 @@ var require_repositoryFactory = __commonJS({
     var messageRepository;
     var settingRepository;
     var userRepository;
+    var messageStoreModeLive = "gist";
     function getUserRepository() {
       if (!userRepository) {
         userRepository = getRepository(Storage_1.StorageModels.User, defaultStorage);
@@ -46401,6 +46404,66 @@ var require_repositoryFactory = __commonJS({
         settingRepository = getRepository(Storage_1.StorageModels.Setting, defaultStorage);
       }
       return settingRepository;
+    }
+    function applyMessageStoreMode(mode) {
+      if (mode !== "memory" && mode !== "gist")
+        return;
+      if (mode === "memory") {
+        if (messageStoreModeLive === "memory" && messageRepository instanceof DiskStorageRepositoryImpl_1.DiskStorageRepositoryImpl)
+          return;
+        const old = messageRepository;
+        if (old && old.flushTimer) {
+          clearTimeout(old.flushTimer);
+          old.flushTimer = null;
+        }
+        const memRepo = getRepository(Storage_1.StorageModels.Message, Storage_1.StorageTypes.diskStorage);
+        if (old && Array.isArray(old.items)) {
+          memRepo.items = old.items;
+          memRepo.maxId = old.items.reduce((m, it) => Math.max(m, it.id || 0), 0);
+        }
+        messageRepository = memRepo;
+        messageStoreModeLive = "memory";
+        log.info("message store mode \u2192 memory (messages no longer written to gists)");
+        return;
+      }
+      if (messageStoreModeLive === "gist" && !(messageRepository instanceof DiskStorageRepositoryImpl_1.DiskStorageRepositoryImpl)) {
+        messageStoreModeLive = "gist";
+        return;
+      }
+      const mem = messageRepository;
+      let durableRepo = null;
+      try {
+        durableRepo = getRepository(Storage_1.StorageModels.Message, Storage_1.StorageTypes.githubGistStorage);
+      } catch (err) {
+        log.warn(`gist repo unavailable (${err?.message}) \u2014 falling back to disk storage for messages`);
+      }
+      if (!durableRepo) {
+        log.warn("gist repo unavailable (env/offline) \u2014 falling back to disk storage for messages");
+        durableRepo = getRepository(Storage_1.StorageModels.Message, Storage_1.StorageTypes.diskStorage);
+      }
+      if (!durableRepo) {
+        log.error("no durable message repo available \u2014 staying on current repo");
+        return;
+      }
+      if (mem && Array.isArray(mem.items) && mem.items.length) {
+        durableRepo.items = mem.items.slice();
+        durableRepo.maxId = durableRepo.items.reduce((m, it) => Math.max(m, it.id || 0), 0);
+        if (typeof durableRepo.rebuildShards === "function")
+          durableRepo.rebuildShards();
+        messageRepository = durableRepo;
+        messageStoreModeLive = "gist";
+        log.info(`message store mode \u2192 durable (flushing ${durableRepo.items.length} messages)`);
+        if (typeof durableRepo.flush === "function")
+          durableRepo.flush().catch(() => {
+          });
+      } else {
+        messageRepository = durableRepo;
+        messageStoreModeLive = "gist";
+        log.info("message store mode \u2192 durable");
+      }
+    }
+    function currentMessageStoreMode() {
+      return messageStoreModeLive;
     }
   }
 });
@@ -59156,6 +59219,8 @@ var require_Setting = __commonJS({
       attendanceHtml: 3e5,
       /** UI-editable html/css/js for the fullscreen login notice (raw, not sanitized) */
       fsNotice: 1e5,
+      /** fullscreen-notice confirm button label (plain text, short) */
+      fsNoticeOkLabel: 60,
       /** one username entry */
       username: 50,
       /** members of a selected-users list */
@@ -59283,6 +59348,12 @@ var require_Setting = __commonJS({
       fsNotice;
       /** ISO timestamp of the last fullscreen-notice save ("" = never) */
       fsNoticeUpdatedAt;
+      /** custom text for the fullscreen-notice confirm button ("" = default) */
+      fsNoticeOkLabel;
+      /** where new chat messages persist: "gist" (durable, slower) | "memory"
+          (server-local, fast — lost on restart/redeploy). User+Setting always
+          persist in the gist regardless. */
+      messageStoreMode;
       constructor(json = {}) {
         super(json);
         this.notice = json.notice || "";
@@ -59303,6 +59374,8 @@ var require_Setting = __commonJS({
         this.attendanceHtml = typeof json.attendanceHtml === "string" ? json.attendanceHtml.slice(0, SETTING_LIMITS.attendanceHtml) : "";
         this.fsNotice = typeof json.fsNotice === "string" ? json.fsNotice.slice(0, SETTING_LIMITS.fsNotice) : "";
         this.fsNoticeUpdatedAt = typeof json.fsNoticeUpdatedAt === "string" ? json.fsNoticeUpdatedAt : "";
+        this.fsNoticeOkLabel = typeof json.fsNoticeOkLabel === "string" ? json.fsNoticeOkLabel.slice(0, SETTING_LIMITS.fsNoticeOkLabel) : "";
+        this.messageStoreMode = json.messageStoreMode === "gist" ? "gist" : "memory";
       }
     };
     exports2.Setting = Setting;
@@ -59625,6 +59698,7 @@ var require_settingController = __commonJS({
     var htmlSanitizer_1 = require_htmlSanitizer();
     var permissions_1 = require_permissions();
     var attendanceService_1 = require_attendanceService();
+    var repositoryFactoryRef = require_repositoryFactory();
     var log = (0, logger_1.default)(__filename);
     async function getSetting() {
       const settings = await (0, config_1.getSettingRepository)().get();
@@ -59697,7 +59771,12 @@ var require_settingController = __commonJS({
     var getFsNotice = async (req, res) => {
       try {
         const setting = await getSetting();
-        res.status(200).json({ notice: setting.fsNotice || "", updatedAt: setting.fsNoticeUpdatedAt || "" });
+        res.status(200).json({
+          notice: setting.fsNotice || "",
+          updatedAt: setting.fsNoticeUpdatedAt || "",
+          okLabel: setting.fsNoticeOkLabel || "",
+          messageStoreMode: setting.messageStoreMode || "memory"
+        });
       } catch (error) {
         handleError(error, res);
       }
@@ -59709,12 +59788,21 @@ var require_settingController = __commonJS({
       log.debug("updating fullscreen notice");
       try {
         const raw = typeof req.body?.notice === "string" ? req.body.notice : "";
+        const okLabel = typeof req.body?.okLabel === "string" ? req.body.okLabel.trim().slice(0, Setting_1.SETTING_LIMITS.fsNoticeOkLabel) : "";
         if (raw.length > Setting_1.SETTING_LIMITS.fsNotice)
           return res.status(400).json({ errorMessage: "client_error.too_large_error" });
         const repository = (0, config_1.getSettingRepository)();
         const setting = await getSetting();
         setting.fsNotice = raw;
+        setting.fsNoticeOkLabel = okLabel;
         setting.fsNoticeUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
+        if (req.body?.messageStoreMode === "memory" || req.body?.messageStoreMode === "gist") {
+          const mode = req.body.messageStoreMode;
+          const changed = setting.messageStoreMode !== mode;
+          setting.messageStoreMode = mode;
+          if (changed)
+            repositoryFactoryRef.applyMessageStoreMode(mode);
+        }
         await repository.update(setting);
         log.info(`fullscreen notice saved (${raw.length} chars)`);
         res.sendStatus(200);
@@ -59753,6 +59841,20 @@ var require_settingController = __commonJS({
       }
     };
     exports2.disableChat = disableChat;
+    var getMessageStoreMode = async (req, res) => {
+      if (!req.session?.userInfo?.isAdmin)
+        return res.sendStatus(403);
+      try {
+        const setting = await getSetting();
+        res.status(200).json({
+          messageStoreMode: setting.messageStoreMode === "gist" ? "gist" : "memory",
+          live: repositoryFactoryRef.currentMessageStoreMode()
+        });
+      } catch (error) {
+        handleError(error, res);
+      }
+    };
+    exports2.getMessageStoreMode = getMessageStoreMode;
     var canWeChat = async (req, res) => {
       try {
         const setting = await getSetting();
@@ -60024,6 +60126,7 @@ var require_apiRouter = __commonJS({
     router.put("/chat/admin-settings", SettingController_1.saveAdminSettings);
     router.get("/chat/admin-settings", SettingController_1.getAdminSettings);
     router.get("/chat/attendance", SettingController_1.getAttendanceSettings);
+    router.get("/chat/messageStoreMode", SettingController_1.getMessageStoreMode);
     router.put("/chat/attendance", SettingController_1.saveAttendanceHtml);
     router.put("/chat/enable", SettingController_1.enableChat);
     router.put("/chat/disable", SettingController_1.disableChat);
@@ -61671,6 +61774,13 @@ var require_initData = __commonJS({
     async function initializeSettingAndUser() {
       await initializeSetting();
       await insertDummyAdminUser();
+      try {
+        const settings = await config_1.getSettingRepository().get();
+        const mode = settings[0]?.messageStoreMode === "gist" ? "gist" : "memory";
+        config_1.applyMessageStoreMode(mode);
+      } catch (err) {
+        log.error("applying saved message-store mode failed:", err);
+      }
     }
     initializeSettingAndUser();
   }

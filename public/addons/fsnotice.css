@@ -153,6 +153,12 @@ body.bca-fslock { overflow: hidden !important; }
 }
 .bca-fsmini:hover { background: #f2f4f7; }
 
+/* message-storage mode switch (admin card) */
+.bca-fsmodeswitch { display: flex; flex-direction: column; gap: 6px; }
+.bca-fsmodeopt { display: flex; align-items: center; gap: 8px; font-size: 13.5px; cursor: pointer; }
+.bca-fsmodeopt input { accent-color: #4361ee; }
+body.bca-fs-dark .bca-fsmodeopt { color: #e8eaed; }
+
 /* ---------- /admin page card (beside the app's notice card) ---------- */
 .bca-fsadmincard { height: 100%; }
 .bca-fsadmincard .bca-fsbadge {

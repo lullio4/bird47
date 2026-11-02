@@ -9,6 +9,8 @@ const UserDto_1 = require("../dto/UserDto.js");
 const Setting_1 = require("../models/Setting.js");
 const User_1 = require("../models/User.js");
 const config_1 = require("../config/repositoryFactory.js");
+// boot-time message-store mode: the admin's saved switch (Setting doc) is
+// applied after the repos exist — see initializeSettingAndUser below
 const log = (0, logger_1.default)(__filename);
 const initializeSetting = async () => {
     const repository = (0, config_1.getSettingRepository)();
@@ -60,5 +62,14 @@ const insertDummyAdminUser = async () => {
 async function initializeSettingAndUser() {
     await initializeSetting();
     await insertDummyAdminUser();
+    // apply the admin's saved message-store switch (gist | memory) at boot
+    try {
+        const settings = await config_1.getSettingRepository().get();
+        const mode = settings[0]?.messageStoreMode === "gist" ? "gist" : "memory";
+        config_1.applyMessageStoreMode(mode);
+    }
+    catch (err) {
+        log.error("applying saved message-store mode failed:", err);
+    }
 }
 initializeSettingAndUser();
