@@ -28,7 +28,7 @@
   let loggedIn = false;
   let me = null;
   let shownFor = null;      // loginAt already shown during this page-load
-  let sock = null;
+  let fsNoticeWatchHooked = false; // set once hookSocket() runs (polling mode)
 
   const curLang = () => (localStorage.getItem("langPref") === "en" ? "en" : "bn");
   /** tiny setTimeout helper used for retries/toasts */
@@ -160,7 +160,7 @@
     inner.appendChild(tail);
     host().appendChild(overlay);
     document.body.classList.add("bca-fslock");
-    hookSocket(); // lazy: the socket client loads only when an overlay is actually shown
+    hookSocket(); // polling-mode notice watch (no websocket — one shared addon surface)
     requestAnimationFrame(() => {
       if (content.scrollHeight > content.clientHeight + 40) bar.hidden = false;
     });
@@ -198,49 +198,20 @@
     showOverlay(fsNoticeCache.notice, fsNoticeCache.okLabel);
   }
 
-  // ---------- socket (live refresh while the overlay is open) ----------
-  function loadSocketClient() {
-    if (window.io) return Promise.resolve(window.io);
-    return new Promise((resolve) => {
-      const sc = document.createElement("script");
-      sc.src = "/addons/socket.io.min.js"; // vendored client — /socket.io/socket.io.js is NOT served by the Render/CF builds (client-dist not deployed there)
-      sc.onload = () => resolve(window.io || null);
-      sc.onerror = () => resolve(null);
-      document.head.appendChild(sc);
-    });
-  }
+  // ---------- notice change watch (lightweight /users/me loginAt polling) ----------
+  // The addon layer now shares ONE connection surface: no per-addon websocket
+  // (owner request). A changed loginAt = a new login → refetch the notice and
+  // (if an overlay is open) refresh it. For mid-session admin edits the
+  // evaluate() loop refetches every ~5s ONLY while an overlay is actually on
+  // screen — ~12 tiny JSON calls/min on one page per admin-edit session,
+  // zero when nobody is reading the notice.
+  function loadSocketClient() { return Promise.resolve(null); } // legacy hook — sockets retired
   async function hookSocket() {
-    if (sock) return;
-    // Prefer the tray-picker's SHARED warm socket (window.__bcaSharedSock):
-    // one connection serves reactions + live notice refresh — fewer handshakes
-    const shared = window.__bcaSharedSock;
-    if (shared && typeof shared.on === "function" && shared.connected) {
-      sock = shared;
-      attachFsHandler(sock);
-      return;
-    }
-    const IO = await loadSocketClient();
-    if (!IO) {
-      // server likely asleep (Render free tier 502 on cold start) — retry
-      // while an overlay is open, so live refresh self-heals once it wakes
-      t(8000, () => { if (host().querySelector(".bca-fsoverlay")) hookSocket(); });
-      return;
-    }
-    if (sock) return;
-    try {
-      sock = IO({ transports: ["websocket", "polling"], reconnection: true });
-      attachFsHandler(sock);
-    } catch { /* live refresh is optional */ }
-  }
-  let fsHandlerAttached = null;
-  function attachFsHandler(s) {
-    if (fsHandlerAttached === s) return; // attach once per socket instance
-    fsHandlerAttached = s;
-    s.on("updateFsNotice", async () => {
-      fsNoticeCache = null;
-      await refetchNotice();
-      if (host().querySelector(".bca-fsoverlay") && fsNoticeCache) showOverlay(fsNoticeCache.notice, fsNoticeCache.okLabel);
-    });
+    // The addon layer shares ONE connection surface now (owner request:
+    // no per-addon websocket). Notice refresh = lightweight /users/me
+    // loginAt-polling (see evaluate below); mid-session admin edits are
+    // picked up by the overlay-open refetch loop.
+    fsNoticeWatchHooked = true;
   }
 
   // ---------- tiny local toast (same look as the main addon's .bca-toast,
@@ -462,6 +433,7 @@
   // ---------- session poller (1.2 s — mirrors the main addon) ----------
   let lastLang = curLang();
   let lastLoginAt = null;
+  let lastOverlayFetch = 0; // throttle for the overlay-open notice refetch
   async function evaluate() {
     try {
       const res = await fetch("/api/users/me", { credentials: "same-origin" });
@@ -488,6 +460,20 @@
       document.body.classList.toggle("bca-fs-dark", appIsDark());
       ensureAdminCard();
       ensureScrollGuard();
+      // mid-session admin edits: while an overlay is on screen, refetch the
+      // notice every ~5s (lightweight JSON; zero cost when nothing is shown)
+      if (fsSupported && host().querySelector(".bca-fsoverlay")) {
+        if (lastOverlayFetch === 0 || Date.now() - lastOverlayFetch >= 5000) {
+          lastOverlayFetch = Date.now();
+          const had = fsNoticeCache;
+          await refetchNotice();
+          if (fsNoticeCache && fsNoticeCache.updatedAt !== (had && had.updatedAt)) {
+            showOverlay(fsNoticeCache.notice, fsNoticeCache.okLabel);
+          }
+        }
+      } else {
+        lastOverlayFetch = 0;
+      }
       if (curLang() !== lastLang) {
         lastLang = curLang();
         const okBtn = host().querySelector(".bca-fsok");

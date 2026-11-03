@@ -1634,6 +1634,7 @@
   }
 
   async function reactOnMessage(bubble, emoji) {
+    return; // dead path — tray-picker owns reactions (REST-first, shared surface)
     const id = parseInt(String(bubble.id || "").replace("message-", ""), 10);
     if (!Number.isFinite(id)) return;
     const username = meUser?.username;
@@ -1740,6 +1741,7 @@
 
   /** the "+" sits at the far right of the 8-emoji quick-reaction row */
   function ensureReactionPlus() {
+    return; // the standalone tray-picker addon owns the "+" now (one picker, no legacy socket)
     if (!loggedIn) return;
     document.querySelectorAll(".dropdown-menu.context-menu.show").forEach((menu) => {
       if (menu.querySelector(".bca-react-plus")) return;
