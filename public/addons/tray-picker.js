@@ -26,7 +26,7 @@
   "use strict";
   if (window.__bcaTrayPicker) return;
   window.__bcaTrayPicker = true;
-  console.log("[bca] tray-picker v12 loaded"); // visible proof of the running version
+  console.log("[bca] tray-picker v14 loaded"); // visible proof of the running version
 
   let catalogue = null; // { categories: [{id, emojis:[{n, e}]}] }
   let catalogueLoading = null;
@@ -61,8 +61,8 @@
   }
 
   const T = {
-    en: { search: "Search…", noRes: "No emoji matched", recent: "Frequently used" },
-    bn: { search: "খুঁজুন…", noRes: "কোনো ইমোজি মেলেনি", recent: "ঘনঘন ব্যবহৃত" },
+    en: { search: "Search…", noRes: "No emoji matched", recent: "Frequently used", more: "More reactions" },
+    bn: { search: "খুঁজুন…", noRes: "কোনো ইমোজি মেলেনি", recent: "ঘনঘন ব্যবহৃত", more: "আরও রিয়্যাকশন" },
   };
   const curLang = () => (localStorage.getItem("langPref") === "en" ? "en" : "bn");
 
@@ -365,8 +365,37 @@
     }, 0);
   }
 
-  // ---------- hook the existing "+" buttons ----------
+  // ---------- the "+" button: tray-picker is the SOLE owner ----------
+  // It both CREATES the button (far right of the app's quick-reaction row in
+  // the message context-menu) and HOOKS it. The main addon's creation is
+  // disabled (v12) — without this the picker would have no door (the v12
+  // regression: custom emojis seemed "off" entirely).
+  function ensurePlusButtons() {
+    if (pop) return; // picker already open
+    document.querySelectorAll(".dropdown-menu.context-menu.show").forEach((menu) => {
+      if (menu.querySelector(".bca-react-plus")) return;
+      const msgRoot = menu.closest('[id^="message-"]');
+      if (!msgRoot || !document.contains(msgRoot)) return;
+      for (const row of menu.querySelectorAll(".dropdown-item, .menu-button")) {
+        const emojiBtns = [...row.querySelectorAll(".btn")].filter(
+          (b) => (b.textContent || "").trim().length <= 4
+        );
+        if (emojiBtns.length < 6) continue; // that's the reactions row, not others
+        const plus = document.createElement("button");
+        plus.type = "button";
+        plus.className = "btn btn-outline-secondary btn-sm icon-button bca-react-plus";
+        plus.textContent = "＋";
+        plus.title = T[curLang()].more;
+        plus.setAttribute("aria-label", T[curLang()].more);
+        row.appendChild(plus); // far right of the emoji row
+        break;
+      }
+    });
+  }
+
+  // ---------- hook the "+" buttons ----------
   function wire() {
+    ensurePlusButtons();
     document.querySelectorAll(".bca-react-plus").forEach((btn) => {
       if (btn.__bcaWired) return;
       btn.__bcaWired = true;
