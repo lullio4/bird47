@@ -203,7 +203,7 @@
     if (window.io) return Promise.resolve(window.io);
     return new Promise((resolve) => {
       const sc = document.createElement("script");
-      sc.src = "/socket.io/socket.io.js";
+      sc.src = "/addons/socket.io.min.js"; // vendored client — /socket.io/socket.io.js is NOT served by the Render/CF builds (client-dist not deployed there)
       sc.onload = () => resolve(window.io || null);
       sc.onerror = () => resolve(null);
       document.head.appendChild(sc);

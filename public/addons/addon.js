@@ -1563,7 +1563,7 @@
   // 2e) custom reactions: a "+" at the far right of the app's quick-reaction
   //     row opens a full picker; selecting an emoji reacts on that message
   //     via the addon's own socket.io connection (same session cookie).
-  //     The official client is loaded from /socket.io/socket.io.js because
+  //     The official client is vendored at /addons/socket.io.min.js because
   //     the minified app does not expose its `io` globally.
   // ==================================================================
   let reactionSock = null;
@@ -1576,7 +1576,7 @@
     if (socketClientLoading) return socketClientLoading;
     socketClientLoading = new Promise((resolve) => {
       const sc = document.createElement("script");
-      sc.src = "/socket.io/socket.io.js";
+      sc.src = "/addons/socket.io.min.js"; // vendored client — /socket.io/socket.io.js is NOT served by the Render/CF builds (client-dist not deployed there)
       sc.onload = () => resolve(window.io || null);
       sc.onerror = () => resolve(null);
       document.head.appendChild(sc);

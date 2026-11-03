@@ -26,7 +26,7 @@
   "use strict";
   if (window.__bcaTrayPicker) return;
   window.__bcaTrayPicker = true;
-  console.log("[bca] tray-picker v8 loaded"); // visible proof of the running version
+  console.log("[bca] tray-picker v9 loaded"); // visible proof of the running version
 
   let catalogue = null; // { categories: [{id, emojis:[{n, e}]}] }
   let catalogueLoading = null;
@@ -51,7 +51,12 @@
         catalogue = { categories };
         return catalogue;
       })
-      .catch(() => null);
+      .catch(() => null)
+      .finally(() => {
+        // a failed fetch (502 while the Render server wakes) must not stay
+        // cached forever — the next call retries
+        if (!catalogue) catalogueLoading = null;
+      });
     return catalogueLoading;
   }
 
@@ -97,13 +102,14 @@
     try {
       const sock = await reactionSocket();
       if (sock) window.__bcaSharedSock = sock;
-    } catch { /* warmed lazily again on next use */ }
+      return sock;
+    } catch { return null; /* warmed lazily again on next use */ }
   }
   function loadSocketClient() {
     if (window.io) return Promise.resolve(window.io);
     return new Promise((resolve) => {
       const sc = document.createElement("script");
-      sc.src = "/socket.io/socket.io.js";
+      sc.src = "/addons/socket.io.min.js"; // vendored client — /socket.io/socket.io.js is NOT served by the Render/CF builds (client-dist not deployed there)
       sc.onload = () => resolve(window.io || null);
       sc.onerror = () => resolve(null);
       document.head.appendChild(sc);
@@ -119,7 +125,7 @@
     sockConnecting = (async () => {
     // Render cold start / slow mobile net: give the handshake real room and
     // RETRY — the first attempt often dies while the server is still waking
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= 5; attempt++) {
       try {
         if (reactionSock) { try { reactionSock.disconnect(); } catch { /* ignore */ } }
         reactionSock = IO({ transports: ["websocket", "polling"], reconnection: true, timeout: 20000 });
@@ -130,7 +136,8 @@
           setTimeout(() => resolve(reactionSock?.connected === true), 15000);
         });
         if (connected) return reactionSock;
-        console.warn(`[bca] reaction socket attempt ${attempt}/3 failed — retrying`);
+        console.warn(`[bca] reaction socket attempt ${attempt}/5 failed — retrying`);
+        if (attempt < 5) await new Promise((r) => setTimeout(r, 3000));
       } catch (e) { console.warn("[bca] reaction socket error:", e?.message || e); }
     }
     return null;
@@ -363,8 +370,29 @@
   // the emoji catalogue and one shared connection are kept ready in the
   // background, so "+" answers instantly on the very first click. The
   // socket has reconnection:true, so a dropped link re-heals by itself.
+  // A Render free-tier server is often ASLEEP when the page loads: the first
+  // attempts get 502 until it finishes waking (~30–60 s). So the warm-up is
+  // SELF-HEALING — retried on a backoff (2 s → 30 s) until the socket is
+  // really connected; the first 502 must never be the last attempt. (The
+  // 1.5 s /users/me poll itself helps wake the server up.)
   let warmedFor = null;
-  let catalogueWarmed = false;
+  let warmBackoffMs = 0;
+  let lastWarmTry = 0;
+  let catalogueTriedAt = 0;
+  function warmNow() {
+    lastWarmTry = Date.now();
+    warmSocket()
+      .then((sock) => {
+        if (sock) {
+          window.__bcaSharedSock = sock;
+          warmBackoffMs = 0; // success — the next drop starts from a fast retry
+        } else {
+          warmBackoffMs = warmBackoffMs ? Math.min(warmBackoffMs * 2, 30000) : 2000;
+          console.warn(`[bca] warm socket not ready — retry in ~${Math.round(warmBackoffMs / 1000)}s`);
+        }
+      })
+      .catch(() => {});
+  }
   async function warmLoop() {
     try {
       const res = await fetch("/api/users/me", { credentials: "same-origin" });
@@ -373,19 +401,29 @@
         const loginAt = String(me?.loginAt || "");
         if (me?.username && loginAt !== warmedFor) {
           warmedFor = loginAt;
-          warmSocket(); // async fire-and-forget; result exposed as __bcaSharedSock
+          warmBackoffMs = 0; // a fresh login warms immediately
+          lastWarmTry = 0;
         }
         // socket.io's own reconnection may have revived the socket — keep the
         // shared reference (fsnotice.js reads it) pointing at the live one
         if (reactionSock?.connected && window.__bcaSharedSock !== reactionSock) {
           window.__bcaSharedSock = reactionSock;
         }
-        if (!catalogueWarmed) {
-          catalogueWarmed = true;
-          loadCatalogue(); // async fire-and-forget; cached for the picker
+        if (!me?.username) return;
+        // keep trying the shared socket until it is really up (backoff-gated)
+        if (!reactionSock?.connected && !sockConnecting &&
+            Date.now() - lastWarmTry >= warmBackoffMs) {
+          warmNow();
+        }
+        // emoji catalogue: fetch once, then retry ~every 10 s while it is
+        // still missing (loadCatalogue clears its own failure cache, so a
+        // later call retries the fetch instead of staying stuck)
+        if (!catalogue && Date.now() - catalogueTriedAt >= 10000) {
+          catalogueTriedAt = Date.now();
+          loadCatalogue();
         }
       }
-    } catch { /* transient */ }
+    } catch { /* transient — likely the server still waking; next tick retries */ }
   }
   setInterval(warmLoop, 1500);
   warmLoop();
