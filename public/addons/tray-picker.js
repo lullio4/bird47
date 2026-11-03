@@ -26,7 +26,7 @@
   "use strict";
   if (window.__bcaTrayPicker) return;
   window.__bcaTrayPicker = true;
-  console.log("[bca] tray-picker v9 loaded"); // visible proof of the running version
+  console.log("[bca] tray-picker v11 loaded"); // visible proof of the running version
 
   let catalogue = null; // { categories: [{id, emojis:[{n, e}]}] }
   let catalogueLoading = null;
@@ -129,6 +129,11 @@
       try {
         if (reactionSock) { try { reactionSock.disconnect(); } catch { /* ignore */ } }
         reactionSock = IO({ transports: ["websocket", "polling"], reconnection: true, timeout: 20000 });
+        // bind the shared reference THE MOMENT the socket is live (and kick a
+        // fresh warm-up right after a drop) — the click path must never meet
+        // a stale __bcaSharedSock
+        reactionSock.on("connect", () => { window.__bcaSharedSock = reactionSock; });
+        reactionSock.on("disconnect", () => { t(1200, warmNow); });
         const connected = await new Promise((resolve) => {
           if (reactionSock.connected) return resolve(true);
           reactionSock.once("connect", () => resolve(true));
@@ -179,8 +184,19 @@
     if (!bubble || !document.contains(bubble)) return false;
     const me = await fetchMeOnce();
     if (!me?.username) return false;
-    const sock = await reactionSocket();
-    if (!sock) return false;
+    // CLICK PATH — fail fast: the shared socket is normally already warm, so
+    // this resolves in ~0ms. If the link happens to be down at click time,
+    // cap the wait at 3s (the background warm loop keeps retrying) instead
+    // of hanging the click on a full reconnect cycle.
+    const sock = await Promise.race([
+      reactionSocket(),
+      new Promise((r) => setTimeout(() => r(null), 3000)),
+    ]);
+    if (!sock || !sock.connected) {
+      console.warn("[bca] reaction socket not ready at click time — retry will follow");
+      warmNow(); // speed the reconnect up right away
+      return false;
+    }
     const id = parseInt(String(bubble.id || "").replace("message-", ""), 10);
     if (!Number.isFinite(id)) return false;
     const reactions = togglePayload(readReactionsFromDom(bubble), emoji, me.username);
@@ -305,7 +321,9 @@
     if (!okViaSocket) {
       console.warn("[bca] reaction failed after retries — emoji:", emoji, "bubble id:", bubble.id);
       const lang = curLang();
-      const msg = lang === "en" ? "Couldn't add the reaction — try again" : "রিয়েকশন দেওয়া যায়নি — আবার চেষ্টা করুন";
+      const msg = lang === "en"
+        ? "Connection wasn't ready — try again in a moment"
+        : "সংযোগ তৈরি হয়নি — একটু পরে আবার চেষ্টা করুন";
       const host = document.getElementById("bca-fs-root");
       const el = document.createElement("div");
       el.className = "bca-toast err";
@@ -387,7 +405,7 @@
           window.__bcaSharedSock = sock;
           warmBackoffMs = 0; // success — the next drop starts from a fast retry
         } else {
-          warmBackoffMs = warmBackoffMs ? Math.min(warmBackoffMs * 2, 30000) : 2000;
+          warmBackoffMs = warmBackoffMs ? Math.min(warmBackoffMs * 2, 10000) : 2000;
           console.warn(`[bca] warm socket not ready — retry in ~${Math.round(warmBackoffMs / 1000)}s`);
         }
       })
