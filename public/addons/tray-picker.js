@@ -13,14 +13,20 @@
         could miss on the server → invalid_error. We only act on bubbles that
         are actually in the DOM right now, and verify the message id matches
         the newest render by re-reading it at click time.
-   This file may replace the picker logic in fsnotice.js — it is standalone
-   and does not edit the minified app or addon.js (workspace write-guard).
+   Owner request (reaction warm-up): from the moment the user is logged in,
+   this addon prepares the socket.io client script, the emoji catalogue and
+   ONE light background connection in advance, and the socket reconnects by
+   itself when dropped — so the first "+" click answers as instantly as the
+   app's default-emoji buttons. The same connection is exposed as
+   window.__bcaSharedSock and reused by fsnotice.js for live notice refresh.
+   Cost: one extra lightweight connection per page-load.
+   This file is standalone and does not edit the minified app or addon.js.
 */
 (() => {
   "use strict";
   if (window.__bcaTrayPicker) return;
   window.__bcaTrayPicker = true;
-  console.log("[bca] tray-picker v7 loaded"); // visible proof of the running version
+  console.log("[bca] tray-picker v8 loaded"); // visible proof of the running version
 
   let catalogue = null; // { categories: [{id, emojis:[{n, e}]}] }
   let catalogueLoading = null;
@@ -83,6 +89,16 @@
 
   // ---------- fallback: send via the addon socket like before ----------
   let reactionSock = null;
+  let sockConnecting = null;
+  // ---------- shared warm socket (kept connected from login onward) ----------
+  // Exposed as window.__bcaSharedSock so fsnotice.js reuses THE SAME
+  // connection for live notice refresh instead of opening a second one.
+  async function warmSocket() {
+    try {
+      const sock = await reactionSocket();
+      if (sock) window.__bcaSharedSock = sock;
+    } catch { /* warmed lazily again on next use */ }
+  }
   function loadSocketClient() {
     if (window.io) return Promise.resolve(window.io);
     return new Promise((resolve) => {
@@ -95,17 +111,31 @@
   }
   async function reactionSocket() {
     const IO = await loadSocketClient();
-    if (!IO) return null;
+    if (!IO) { console.warn("[bca] socket.io client script unavailable"); return null; }
     if (reactionSock?.connected) return reactionSock;
-    try {
-      reactionSock = IO({ transports: ["websocket", "polling"], reconnection: true });
-      await new Promise((resolve) => {
-        if (reactionSock.connected) return resolve(true);
-        reactionSock.once("connect", () => resolve(true));
-        setTimeout(resolve, 5000);
-      });
-      return reactionSock?.connected ? reactionSock : null;
-    } catch { return null; }
+    // a connect attempt may already be in flight (warm loop + first click) —
+    // share it instead of racing a second socket into existence
+    if (sockConnecting) return sockConnecting;
+    sockConnecting = (async () => {
+    // Render cold start / slow mobile net: give the handshake real room and
+    // RETRY — the first attempt often dies while the server is still waking
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        if (reactionSock) { try { reactionSock.disconnect(); } catch { /* ignore */ } }
+        reactionSock = IO({ transports: ["websocket", "polling"], reconnection: true, timeout: 20000 });
+        const connected = await new Promise((resolve) => {
+          if (reactionSock.connected) return resolve(true);
+          reactionSock.once("connect", () => resolve(true));
+          reactionSock.once("connect_error", () => resolve(false));
+          setTimeout(() => resolve(reactionSock?.connected === true), 15000);
+        });
+        if (connected) return reactionSock;
+        console.warn(`[bca] reaction socket attempt ${attempt}/3 failed — retrying`);
+      } catch (e) { console.warn("[bca] reaction socket error:", e?.message || e); }
+    }
+    return null;
+    })().finally(() => { sockConnecting = null; });
+    return sockConnecting;
   }
   function readReactionsFromDom(bubble) {
     const reactions = {};
@@ -156,12 +186,13 @@
       reactions[emoji].usernames.push(me.username);
     return new Promise((resolve) => {
       let done = false;
-      sock.timeout(10000).emit("reactMessage", { id, reactions }, (err) => {
+      sock.timeout(15000).emit("reactMessage", { id, reactions }, (err) => {
         if (done) return;
         done = true;
+        if (err) console.warn("[bca] reaction ack error/timeout:", String(err).slice(0, 120));
         resolve(!err);
       });
-      setTimeout(() => { if (!done) { done = true; resolve(false); } }, 10500);
+      setTimeout(() => { if (!done) { done = true; console.warn("[bca] reaction emit hard timeout"); resolve(false); } }, 16000);
     });
   }
 
@@ -262,9 +293,10 @@
     closePop();
     // 1st choice: the app's own quick-reaction path (its socket, its acks)
     if (appReactionClick(bubble, emoji)) return;
-    // fallback: the addon socket, with a longer timeout
+    // fallback: the addon socket, with retries for cold-start/slow networks
     const okViaSocket = await socketReact(bubble, emoji);
     if (!okViaSocket) {
+      console.warn("[bca] reaction failed after retries — emoji:", emoji, "bubble id:", bubble.id);
       const lang = curLang();
       const msg = lang === "en" ? "Couldn't add the reaction — try again" : "রিয়েকশন দেওয়া যায়নি — আবার চেষ্টা করুন";
       const host = document.getElementById("bca-fs-root");
@@ -325,4 +357,36 @@
   const mo = new MutationObserver(() => wire());
   mo.observe(document.documentElement, { childList: true, subtree: true });
   wire();
+
+  // ---------- warm everything early (login detected via /users/me) ----------
+  // From the first moment of a logged-in session the socket client script,
+  // the emoji catalogue and one shared connection are kept ready in the
+  // background, so "+" answers instantly on the very first click. The
+  // socket has reconnection:true, so a dropped link re-heals by itself.
+  let warmedFor = null;
+  let catalogueWarmed = false;
+  async function warmLoop() {
+    try {
+      const res = await fetch("/api/users/me", { credentials: "same-origin" });
+      if (res.ok) {
+        const me = await res.json().catch(() => null);
+        const loginAt = String(me?.loginAt || "");
+        if (me?.username && loginAt !== warmedFor) {
+          warmedFor = loginAt;
+          warmSocket(); // async fire-and-forget; result exposed as __bcaSharedSock
+        }
+        // socket.io's own reconnection may have revived the socket — keep the
+        // shared reference (fsnotice.js reads it) pointing at the live one
+        if (reactionSock?.connected && window.__bcaSharedSock !== reactionSock) {
+          window.__bcaSharedSock = reactionSock;
+        }
+        if (!catalogueWarmed) {
+          catalogueWarmed = true;
+          loadCatalogue(); // async fire-and-forget; cached for the picker
+        }
+      }
+    } catch { /* transient */ }
+  }
+  setInterval(warmLoop, 1500);
+  warmLoop();
 })();

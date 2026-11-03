@@ -31,6 +31,8 @@
   let sock = null;
 
   const curLang = () => (localStorage.getItem("langPref") === "en" ? "en" : "bn");
+  /** tiny setTimeout helper used for retries/toasts */
+  const t = (ms, fn) => setTimeout(fn, ms);
   const STRINGS = {
     en: {
       ok: "Understood",
@@ -140,7 +142,7 @@
         <button type="button" class="bca-fsok"></button>
       </div>`;
     const okBtn = overlay.querySelector(".bca-fsok");
-    okBtn.textContent = okLabel || S().okDefault;
+    okBtn.textContent = okLabel || S().ok;
     okBtn.addEventListener("click", closeOverlay);
     const inner = overlay.querySelector(".bca-fsinner");
     // admin-authored raw html/css/js — the SAME trust decision as the
@@ -158,6 +160,7 @@
     inner.appendChild(tail);
     host().appendChild(overlay);
     document.body.classList.add("bca-fslock");
+    hookSocket(); // lazy: the socket client loads only when an overlay is actually shown
     requestAnimationFrame(() => {
       if (content.scrollHeight > content.clientHeight + 40) bar.hidden = false;
     });
@@ -207,16 +210,47 @@
     });
   }
   async function hookSocket() {
+    if (sock) return;
+    // Prefer the tray-picker's SHARED warm socket (window.__bcaSharedSock):
+    // one connection serves reactions + live notice refresh — fewer handshakes
+    const shared = window.__bcaSharedSock;
+    if (shared && typeof shared.on === "function" && shared.connected) {
+      sock = shared;
+      attachFsHandler(sock);
+      return;
+    }
     const IO = await loadSocketClient();
-    if (!IO || sock) return;
+    if (!IO) {
+      // server likely asleep (Render free tier 502 on cold start) — retry
+      // while an overlay is open, so live refresh self-heals once it wakes
+      t(8000, () => { if (host().querySelector(".bca-fsoverlay")) hookSocket(); });
+      return;
+    }
+    if (sock) return;
     try {
       sock = IO({ transports: ["websocket", "polling"], reconnection: true });
-      sock.on("updateFsNotice", async () => {
-        fsNoticeCache = null;
-        await refetchNotice();
-        if (host().querySelector(".bca-fsoverlay") && fsNoticeCache) showOverlay(fsNoticeCache.notice);
-      });
+      attachFsHandler(sock);
     } catch { /* live refresh is optional */ }
+  }
+  let fsHandlerAttached = null;
+  function attachFsHandler(s) {
+    if (fsHandlerAttached === s) return; // attach once per socket instance
+    fsHandlerAttached = s;
+    s.on("updateFsNotice", async () => {
+      fsNoticeCache = null;
+      await refetchNotice();
+      if (host().querySelector(".bca-fsoverlay") && fsNoticeCache) showOverlay(fsNoticeCache.notice, fsNoticeCache.okLabel);
+    });
+  }
+
+  // ---------- tiny local toast (same look as the main addon's .bca-toast,
+  // which lives in addon.js and must not be reached from here) ----------
+  function showToast(message, isErr = false) {
+    const el = document.createElement("div");
+    el.className = "bca-toast" + (isErr ? " err" : "");
+    el.textContent = message;
+    host().appendChild(el);
+    t(3200, () => el.remove());
   }
 
   // ---------- editor (the /admin card) ----------
@@ -246,7 +280,7 @@
     box.querySelector(".bca-fshint2").textContent = s.editorHint;
     const okLabelInput = box.querySelector(".bca-fsoklabel");
     box.querySelector(".bca-fsoklabel-label").textContent = s.okLabelLabel;
-    okLabelInput.placeholder = s.okDefault;
+    okLabelInput.placeholder = s.ok;
     box.querySelector(".bca-fsmodelabel").textContent = s.modeLabel;
     box.querySelector(".bca-fsmodegist").textContent = s.modeGist;
     box.querySelector(".bca-fsmodememory").textContent = s.modeMemory;
@@ -309,7 +343,7 @@
     modeRadios().forEach((radio) =>
       radio.addEventListener("change", async () => {
         const okNow = await saveNow(undefined, undefined, radio.value);
-        if (okNow) toast(s.modeSaved);
+        if (okNow) showToast(s.modeSaved);
       })
     );
 
@@ -468,5 +502,4 @@
 
   setInterval(evaluate, 1200);
   evaluate();
-  hookSocket();
 })();
