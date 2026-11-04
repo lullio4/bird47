@@ -59949,6 +59949,459 @@ var require_settingController = __commonJS({
   }
 });
 
+// server/src/socket/socketEvents.js
+var require_socketEvents = __commonJS({
+  "server/src/socket/socketEvents.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.socketEvents = void 0;
+    exports2.socketEvents = {
+      usersWithStatus: "usersWithStatus",
+      disconnect: "disconnect",
+      deleteChat: "deleteChat",
+      chatDeleted: "chatDeleted",
+      updateNotice: "updateNotice",
+      updateFsNotice: "updateFsNotice",
+      chatMessage: "chatMessage",
+      editMessage: "editMessage",
+      editedMessage: "editedMessage",
+      reactMessage: "reactMessage",
+      reactedMessage: "reactedMessage",
+      deleteMessage: "deleteMessage",
+      deletedMessage: "deletedMessage",
+      changeStatus: "changeStatus",
+      changedStatus: "changedStatus",
+      triggerTyping: "triggerTyping",
+      typingMessage: "typingMessage"
+    };
+  }
+});
+
+// server/src/socket/chatHandler.js
+var require_chatHandler = __commonJS({
+  "server/src/socket/chatHandler.js"(exports2) {
+    "use strict";
+    var __importDefault = exports2 && exports2.__importDefault || function(mod) {
+      return mod && mod.__esModule ? mod : { "default": mod };
+    };
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.handleChatMessage = handleChatMessage;
+    exports2.handleEditMessage = handleEditMessage;
+    exports2.handleReactMessage = handleReactMessage;
+    exports2.handleDeleteMessage = handleDeleteMessage;
+    exports2.handleDeleteChat = handleDeleteChat;
+    exports2.handleUpdateNotice = handleUpdateNotice;
+    exports2.handleUpdateFsNotice = handleUpdateFsNotice;
+    var config_1 = require_repositoryFactory();
+    var logger_1 = __importDefault(require_logger2());
+    var ClientError_1 = require_ClientError();
+    var SocketEvents_1 = require_socketEvents();
+    var User_1 = require_User();
+    var htmlSanitizer_1 = require_htmlSanitizer();
+    var log = (0, logger_1.default)(__filename);
+    function safeCallback(callback, payload) {
+      if (typeof callback === "function")
+        callback(payload);
+    }
+    async function handleChatMessage(message, callback, socket) {
+      log.debug(`Received chat message: ${JSON.stringify(message)}`);
+      try {
+        if (!message?.text?.trim()) {
+          safeCallback(callback, ClientError_1.ClientError.invalidError());
+          return;
+        }
+        if (message.text.length > htmlSanitizer_1.MAX_MESSAGE_CHARS) {
+          safeCallback(callback, ClientError_1.ClientError.tooLargeError());
+          return;
+        }
+        const repository = (0, config_1.getMessageRepository)();
+        message.username = socket.request.session.userInfo.username;
+        message.role = socket.request.session.userInfo.isAdmin ? User_1.RoleEnum.ADMIN : User_1.RoleEnum.NON_ADMIN;
+        message.text = (0, htmlSanitizer_1.sanitizeMessageHtml)(message.text);
+        if (!message.text.trim()) {
+          safeCallback(callback, ClientError_1.ClientError.invalidError());
+          return;
+        }
+        message.time = (/* @__PURE__ */ new Date()).toISOString();
+        const result = await repository.add(message);
+        safeCallback(callback, result);
+        socket.broadcast.emit(SocketEvents_1.socketEvents.chatMessage, message);
+      } catch (err) {
+        log.error(err);
+        safeCallback(callback, ClientError_1.ClientError.internalError());
+      }
+    }
+    async function handleEditMessage(updateMessage, socket, callback) {
+      log.debug(`Received edit message: ${JSON.stringify(updateMessage)}`);
+      try {
+        if (!updateMessage?.id || !updateMessage?.text?.trim()) {
+          safeCallback(callback, ClientError_1.ClientError.invalidError());
+          return;
+        }
+        if (updateMessage.text.length > htmlSanitizer_1.MAX_MESSAGE_CHARS) {
+          safeCallback(callback, ClientError_1.ClientError.tooLargeError());
+          return;
+        }
+        const repository = (0, config_1.getMessageRepository)();
+        const message = await repository.find(updateMessage.id);
+        if (!message) {
+          safeCallback(callback, ClientError_1.ClientError.notExistsError());
+          return;
+        }
+        const loggedInUser = socket.request.session.userInfo;
+        if (message.username != loggedInUser.username) {
+          safeCallback(callback, ClientError_1.ClientError.accessDeniedError());
+          return;
+        }
+        message.text = (0, htmlSanitizer_1.sanitizeMessageHtml)(updateMessage.text);
+        if (!message.text.trim()) {
+          safeCallback(callback, ClientError_1.ClientError.invalidError());
+          return;
+        }
+        message.edited_at = (/* @__PURE__ */ new Date()).toISOString();
+        const updatedMessage = await repository.update(message);
+        safeCallback(callback, updatedMessage);
+        socket.broadcast.emit(SocketEvents_1.socketEvents.editedMessage, updatedMessage);
+      } catch (err) {
+        log.error(err);
+        safeCallback(callback, ClientError_1.ClientError.internalError());
+      }
+    }
+    async function handleReactMessage(reactedMessage, socket, callback) {
+      log.debug(`Received reaction to message: ${JSON.stringify(reactedMessage)}`);
+      try {
+        if (!reactedMessage?.id)
+          throw ClientError_1.ClientError.invalidError();
+        const repository = (0, config_1.getMessageRepository)();
+        const message = await repository.find(reactedMessage.id);
+        if (!message)
+          throw ClientError_1.ClientError.invalidError();
+        const curUserName = socket.request.session.userInfo.username;
+        if (!message.reactions || typeof message.reactions !== "object")
+          message.reactions = {};
+        for (const emoji of Object.keys(reactedMessage.reactions || {})) {
+          const incoming = reactedMessage.reactions[emoji];
+          if (!incoming || !Array.isArray(incoming.usernames))
+            continue;
+          if (!message.reactions[emoji] || !Array.isArray(message.reactions[emoji].usernames))
+            message.reactions[emoji] = { usernames: [] };
+          const userList = message.reactions[emoji].usernames;
+          const foundUsr = incoming.usernames.find((usrname) => usrname == curUserName);
+          const curUsr = userList.find((usrname) => usrname == curUserName);
+          if (foundUsr && !curUsr)
+            userList.push(curUserName);
+          else if (!foundUsr && curUsr)
+            message.reactions[emoji].usernames = userList.filter((usr) => usr != curUserName);
+        }
+        reactedMessage.reactions = message.reactions;
+        await repository.update(message);
+        safeCallback(callback, reactedMessage);
+        socket.broadcast.emit(SocketEvents_1.socketEvents.reactedMessage, reactedMessage);
+      } catch (err) {
+        log.error(err);
+        safeCallback(callback, ClientError_1.ClientError.internalError());
+      }
+    }
+    async function handleDeleteChat(socket, callback) {
+      log.debug(`Received delete chat request.`);
+      try {
+        if (!socket.request.session.userInfo.isAdmin) {
+          safeCallback(callback, ClientError_1.ClientError.accessDeniedError());
+          return;
+        }
+        const repository = (0, config_1.getMessageRepository)();
+        await repository.removeAll();
+        safeCallback(callback, "ok");
+        socket.broadcast.emit(SocketEvents_1.socketEvents.chatDeleted);
+      } catch (err) {
+        log.error(err);
+        safeCallback(callback, ClientError_1.ClientError.internalError());
+      }
+    }
+    async function handleDeleteMessage(id, socket, callback) {
+      try {
+        if (!id) {
+          safeCallback(callback, ClientError_1.ClientError.invalidError());
+          return;
+        }
+        const loggedInUser = socket.request.session.userInfo;
+        const repository = (0, config_1.getMessageRepository)();
+        const message = await repository.find(id);
+        if (!message) {
+          safeCallback(callback, { status: false });
+          return;
+        }
+        if (message.username != loggedInUser.username && !loggedInUser.isAdmin) {
+          safeCallback(callback, ClientError_1.ClientError.accessDeniedError());
+          return;
+        }
+        const result = await repository.remove(id);
+        if (result) {
+          log.debug(`Deleted message with id: ${id}`);
+          socket.broadcast.emit(SocketEvents_1.socketEvents.deletedMessage, id);
+          safeCallback(callback, { status: true });
+        } else {
+          log.debug(`Failed to delete msg ${id}, as the id doesn't exist`);
+          safeCallback(callback, { status: false });
+        }
+      } catch (err) {
+        log.error(err);
+        safeCallback(callback, { status: false, error: ClientError_1.ClientError.internalError() });
+      }
+    }
+    async function handleUpdateNotice(socket, callback) {
+      try {
+        if (!socket.request.session.userInfo?.isAdmin) {
+          safeCallback(callback, JSON.stringify({ success: false, error: "client_error.access_denied" }));
+          return;
+        }
+        socket.broadcast.emit(SocketEvents_1.socketEvents.updateNotice);
+        safeCallback(callback, JSON.stringify({ success: true }));
+      } catch (err) {
+        log.error(err);
+        safeCallback(callback, JSON.stringify({ success: false }));
+      }
+    }
+    async function handleUpdateFsNotice(socket, callback) {
+      try {
+        if (!socket.request.session.userInfo?.isAdmin) {
+          safeCallback(callback, JSON.stringify({ success: false, error: "client_error.access_denied" }));
+          return;
+        }
+        socket.broadcast.emit(SocketEvents_1.socketEvents.updateFsNotice);
+        safeCallback(callback, JSON.stringify({ success: true }));
+      } catch (err) {
+        log.error(err);
+        safeCallback(callback, JSON.stringify({ success: false }));
+      }
+    }
+  }
+});
+
+// server/src/socket/userHandler.js
+var require_userHandler = __commonJS({
+  "server/src/socket/userHandler.js"(exports2) {
+    "use strict";
+    var __importDefault = exports2 && exports2.__importDefault || function(mod) {
+      return mod && mod.__esModule ? mod : { "default": mod };
+    };
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.broadcastUsersList = broadcastUsersList;
+    exports2.handleChangeStatus = handleChangeStatus;
+    exports2.handleTriggerTyping = handleTriggerTyping;
+    var logger_1 = __importDefault(require_logger2());
+    var UserDto_1 = require_UserDto();
+    var ClientError_1 = require_ClientError();
+    var UserCrudService_1 = require_userCrudService();
+    var config_1 = require_repositoryFactory();
+    var SocketEvents_1 = require_socketEvents();
+    var permissions_1 = require_permissions();
+    var log = (0, logger_1.default)(__filename);
+    var cachedUsers = [];
+    async function broadcastUsersList(io) {
+      try {
+        let dbUsers = await (0, UserCrudService_1.getUsers)();
+        dbUsers = dbUsers.filter((user) => user.active);
+        const activeUsers = getActiveUsers(io);
+        let updatedUsers = dbUsers.map((user) => updateUserStatus(user, activeUsers));
+        updatedUsers = updatedUsers.filter((user) => user.status === UserDto_1.userStatuses.online);
+        let setting = null;
+        try {
+          const settings = await (0, config_1.getSettingRepository)().get();
+          setting = settings[0] || null;
+        } catch (settingErr) {
+          log.error(settingErr);
+        }
+        const failOpen = setting === null;
+        for (const socket of io.sockets.sockets.values()) {
+          const session = socket.request?.session?.userInfo;
+          const maySeeAll = failOpen || (0, permissions_1.canSeeOnlineUsers)(setting, session);
+          const payload = maySeeAll ? updatedUsers : updatedUsers.filter((u) => u.username === session?.username);
+          socket.emit(SocketEvents_1.socketEvents.usersWithStatus, payload);
+        }
+      } catch (err) {
+        log.error(err);
+      }
+    }
+    function getActiveUsers(io) {
+      return Array.from(io.sockets.sockets.values()).map(({ id, handshake, request }) => {
+        const { time } = handshake;
+        const username = request.session.userInfo.username;
+        return { socketId: id, username, connectedAt: time };
+      });
+    }
+    function updateUserStatus(user, activeUsers) {
+      const activeUser = activeUsers.find((activeUser2) => activeUser2.username === user.username);
+      const time = activeUser ? new Date(activeUser.connectedAt).toISOString() : user.lastLoginDate || user.createdDate;
+      const socketId = activeUser ? activeUser.socketId : void 0;
+      const cachedUserIndex = cachedUsers.findIndex((cachedUser) => cachedUser.username === user.username);
+      const status = activeUser ? UserDto_1.userStatuses.online : UserDto_1.userStatuses.offline;
+      const updatedUser = {
+        username: user.username,
+        status,
+        time,
+        socketId,
+        active: user.active,
+        typing: false
+      };
+      if (cachedUserIndex === -1) {
+        cachedUsers.push(updatedUser);
+      } else {
+        cachedUsers[cachedUserIndex] = updatedUser;
+      }
+      return updatedUser;
+    }
+    async function handleChangeStatus(user, socket, callback) {
+      log.debug(`Received update status to user: ${JSON.stringify(user)}`);
+      try {
+        const username = socket.request.session.userInfo?.username;
+        const cuIndex = cachedUsers.findIndex((u) => u.username == username);
+        const cUser = cachedUsers[cuIndex];
+        if (cUser) {
+          cachedUsers[cuIndex].status = user?.status;
+          cachedUsers[cuIndex].username = username;
+          if (typeof callback === "function") {
+            callback(cUser);
+          }
+          socket.broadcast.emit(SocketEvents_1.socketEvents.changedStatus, cUser);
+        } else {
+          if (typeof callback === "function") {
+            callback({ ...user, username });
+          }
+        }
+      } catch (err) {
+        log.error(err);
+        if (typeof callback === "function")
+          callback(ClientError_1.ClientError.internalError());
+      }
+    }
+    var lastTypingBroadcast = /* @__PURE__ */ new Map();
+    var TYPING_MIN_INTERVAL_MS = 1200;
+    async function handleTriggerTyping(user, socket, callback) {
+      try {
+        const username = socket.request.session.userInfo?.username;
+        const typing = user?.typing !== false;
+        const now = Date.now();
+        const last = lastTypingBroadcast.get(username) || 0;
+        if (typing && now - last < TYPING_MIN_INTERVAL_MS) {
+          if (typeof callback === "function")
+            callback(JSON.stringify({ ...user, username, typing: true }));
+          return;
+        }
+        lastTypingBroadcast.set(username, now);
+        const payload = { ...user || {}, username, typing };
+        log.debug(`Broadcasting typing status: ${JSON.stringify(payload)}`);
+        if (typeof callback === "function") {
+          callback(JSON.stringify(payload));
+        }
+        socket.broadcast.emit(SocketEvents_1.socketEvents.typingMessage, payload);
+      } catch (err) {
+        log.error(err);
+        if (typeof callback === "function")
+          callback(JSON.stringify({ error: true }));
+      }
+    }
+  }
+});
+
+// server/src/models/Message.js
+var require_Message = __commonJS({
+  "server/src/models/Message.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.Message = void 0;
+    var BaseModel_1 = require_BaseModel();
+    var User_1 = require_User();
+    var ReplyTo = class {
+      id;
+      username;
+      text;
+      constructor(json) {
+        this.id = json.id;
+        this.text = typeof json.text === "string" ? json.text.substr(0, 50) : "";
+        this.username = json.username;
+      }
+    };
+    var Message = class extends BaseModel_1.BaseModel {
+      text;
+      username;
+      time;
+      replyTo;
+      edited_at;
+      role = User_1.RoleEnum.NON_ADMIN;
+      reactions;
+      constructor(json = {}) {
+        super(json);
+        this.text = json.text || "";
+        this.username = json.username || "";
+        this.time = json.time || "";
+        this.replyTo = json.replyTo ? new ReplyTo(json.replyTo) : null;
+        this.reactions = json.reactions || {};
+      }
+    };
+    exports2.Message = Message;
+  }
+});
+
+// server/src/socket/socketService.js
+var require_socketService = __commonJS({
+  "server/src/socket/socketService.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    var chatHandler_1 = require_chatHandler();
+    var userHandler_1 = require_userHandler();
+    var Message_1 = require_Message();
+    var SocketEvents_1 = require_socketEvents();
+    function socketService(io) {
+      setLiveIo(io);
+      const onConnection = (socket) => {
+        const sessionId = socket.request.session.id;
+        socket.join(sessionId);
+        socket.on(SocketEvents_1.socketEvents.disconnect, () => {
+          (0, userHandler_1.broadcastUsersList)(io);
+        });
+        (0, userHandler_1.broadcastUsersList)(io);
+        socket.on(SocketEvents_1.socketEvents.editMessage, (message, callback) => {
+          (0, chatHandler_1.handleEditMessage)(message, socket, callback);
+        });
+        socket.on(SocketEvents_1.socketEvents.reactMessage, (message, callback) => {
+          (0, chatHandler_1.handleReactMessage)(message, socket, callback);
+        });
+        socket.on(SocketEvents_1.socketEvents.deleteMessage, (id, callback) => {
+          (0, chatHandler_1.handleDeleteMessage)(id, socket, callback);
+        });
+        socket.on(SocketEvents_1.socketEvents.deleteChat, (callback) => {
+          (0, chatHandler_1.handleDeleteChat)(socket, callback);
+        });
+        socket.on(SocketEvents_1.socketEvents.chatMessage, (message, callback) => {
+          (0, chatHandler_1.handleChatMessage)(new Message_1.Message(message), callback, socket);
+        });
+        socket.on(SocketEvents_1.socketEvents.updateNotice, (callback) => {
+          (0, chatHandler_1.handleUpdateNotice)(socket, callback);
+        });
+        socket.on(SocketEvents_1.socketEvents.updateFsNotice, (callback) => {
+          (0, chatHandler_1.handleUpdateFsNotice)(socket, callback);
+        });
+        socket.on(SocketEvents_1.socketEvents.changeStatus, (user, callback) => {
+          (0, userHandler_1.handleChangeStatus)(user, socket, callback);
+        });
+        socket.on(SocketEvents_1.socketEvents.triggerTyping, (user, callback) => {
+          (0, userHandler_1.handleTriggerTyping)(user, socket, callback);
+        });
+      };
+      io.on("connection", onConnection);
+    }
+    exports2["default"] = socketService;
+    var liveIo = null;
+    var setLiveIo = (io) => {
+      liveIo = io;
+    };
+    var getLiveIo = () => liveIo;
+    exports2.setLiveIo = setLiveIo;
+    exports2.getLiveIo = getLiveIo;
+  }
+});
+
 // server/src/controllers/chatController.js
 var require_chatController = __commonJS({
   "server/src/controllers/chatController.js"(exports2) {
@@ -59957,7 +60410,10 @@ var require_chatController = __commonJS({
       return mod && mod.__esModule ? mod : { "default": mod };
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
-    exports2.exportChat = exports2.getMissingMessages = exports2.getMessages = void 0;
+    exports2.exportChat = exports2.reactMessage = exports2.getMissingMessages = exports2.getMessages = void 0;
+    var socketService_1 = require_socketService();
+    var SocketEvents_1 = require_socketEvents();
+    var socketEvents_1 = require_socketEvents();
     var logger_1 = __importDefault(require_logger2());
     var ClientError_1 = require_ClientError();
     var config_1 = require_repositoryFactory();
@@ -60050,6 +60506,45 @@ var require_chatController = __commonJS({
       }
     };
     exports2.exportChat = exportChat;
+    var reactMessage = async (req, res) => {
+      try {
+        const reactedMessage = req.body || {};
+        if (!reactedMessage?.id)
+          throw ClientError_1.ClientError.invalidError();
+        const repository = (0, config_1.getMessageRepository)();
+        const message = await repository.find(reactedMessage.id);
+        if (!message)
+          throw new Error("message not found");
+        const curUserName = req.session?.userInfo?.username;
+        if (!curUserName)
+          throw ClientError_1.ClientError.accessDeniedError();
+        if (!message.reactions || typeof message.reactions !== "object")
+          message.reactions = {};
+        for (const emoji of Object.keys(reactedMessage.reactions || {})) {
+          const incoming = reactedMessage.reactions[emoji];
+          if (!incoming || !Array.isArray(incoming.usernames))
+            continue;
+          if (!message.reactions[emoji] || !Array.isArray(message.reactions[emoji].usernames))
+            message.reactions[emoji] = { usernames: [] };
+          const userList = message.reactions[emoji].usernames;
+          const foundUsr = incoming.usernames.find((usrname) => usrname == curUserName);
+          const curUsr = userList.find((usrname) => usrname == curUserName);
+          if (foundUsr && !curUsr)
+            userList.push(curUserName);
+          else if (!foundUsr && curUsr)
+            message.reactions[emoji].usernames = userList.filter((usr) => usr != curUserName);
+        }
+        reactedMessage.reactions = message.reactions;
+        await repository.update(message);
+        res.status(200).json(reactedMessage);
+        const io = (0, socketService_1.getLiveIo)();
+        if (io)
+          io.emit(SocketEvents_1.socketEvents.reactedMessage, reactedMessage);
+      } catch (error) {
+        handleError(error, res);
+      }
+    };
+    exports2.reactMessage = reactMessage;
     var handleError = (error, res) => {
       if (error instanceof ClientError_1.ClientError) {
         res.status(400).send({ errorMessage: error.message });
@@ -60116,6 +60611,7 @@ var require_apiRouter = __commonJS({
     router.put("/chat/saveFrequentSymbols", SettingController_1.saveFrequentSymbols);
     router.post("/chat/getMessages", ChatController_1.getMessages);
     router.post("/chat/getMissingMessages", ChatController_1.getMissingMessages);
+    router.post("/chat/react", ChatController_1.reactMessage);
     router.put("/chat/updateNotice", SettingController_1.updateNotice);
     router.get("/chat/getFsNotice", SettingController_1.getFsNotice);
     router.put("/chat/updateFsNotice", SettingController_1.updateFsNotice);
@@ -61915,451 +62411,6 @@ var require_app = __commonJS({
     app.get("*", (req, res) => {
       res.sendFile(path_1.default.join(paths_1.PROJECT_ROOT, "public", "index.html"));
     });
-  }
-});
-
-// server/src/socket/socketEvents.js
-var require_socketEvents = __commonJS({
-  "server/src/socket/socketEvents.js"(exports2) {
-    "use strict";
-    Object.defineProperty(exports2, "__esModule", { value: true });
-    exports2.socketEvents = void 0;
-    exports2.socketEvents = {
-      usersWithStatus: "usersWithStatus",
-      disconnect: "disconnect",
-      deleteChat: "deleteChat",
-      chatDeleted: "chatDeleted",
-      updateNotice: "updateNotice",
-      updateFsNotice: "updateFsNotice",
-      chatMessage: "chatMessage",
-      editMessage: "editMessage",
-      editedMessage: "editedMessage",
-      reactMessage: "reactMessage",
-      reactedMessage: "reactedMessage",
-      deleteMessage: "deleteMessage",
-      deletedMessage: "deletedMessage",
-      changeStatus: "changeStatus",
-      changedStatus: "changedStatus",
-      triggerTyping: "triggerTyping",
-      typingMessage: "typingMessage"
-    };
-  }
-});
-
-// server/src/socket/chatHandler.js
-var require_chatHandler = __commonJS({
-  "server/src/socket/chatHandler.js"(exports2) {
-    "use strict";
-    var __importDefault = exports2 && exports2.__importDefault || function(mod) {
-      return mod && mod.__esModule ? mod : { "default": mod };
-    };
-    Object.defineProperty(exports2, "__esModule", { value: true });
-    exports2.handleChatMessage = handleChatMessage;
-    exports2.handleEditMessage = handleEditMessage;
-    exports2.handleReactMessage = handleReactMessage;
-    exports2.handleDeleteMessage = handleDeleteMessage;
-    exports2.handleDeleteChat = handleDeleteChat;
-    exports2.handleUpdateNotice = handleUpdateNotice;
-    exports2.handleUpdateFsNotice = handleUpdateFsNotice;
-    var config_1 = require_repositoryFactory();
-    var logger_1 = __importDefault(require_logger2());
-    var ClientError_1 = require_ClientError();
-    var SocketEvents_1 = require_socketEvents();
-    var User_1 = require_User();
-    var htmlSanitizer_1 = require_htmlSanitizer();
-    var log = (0, logger_1.default)(__filename);
-    function safeCallback(callback, payload) {
-      if (typeof callback === "function")
-        callback(payload);
-    }
-    async function handleChatMessage(message, callback, socket) {
-      log.debug(`Received chat message: ${JSON.stringify(message)}`);
-      try {
-        if (!message?.text?.trim()) {
-          safeCallback(callback, ClientError_1.ClientError.invalidError());
-          return;
-        }
-        if (message.text.length > htmlSanitizer_1.MAX_MESSAGE_CHARS) {
-          safeCallback(callback, ClientError_1.ClientError.tooLargeError());
-          return;
-        }
-        const repository = (0, config_1.getMessageRepository)();
-        message.username = socket.request.session.userInfo.username;
-        message.role = socket.request.session.userInfo.isAdmin ? User_1.RoleEnum.ADMIN : User_1.RoleEnum.NON_ADMIN;
-        message.text = (0, htmlSanitizer_1.sanitizeMessageHtml)(message.text);
-        if (!message.text.trim()) {
-          safeCallback(callback, ClientError_1.ClientError.invalidError());
-          return;
-        }
-        message.time = (/* @__PURE__ */ new Date()).toISOString();
-        const result = await repository.add(message);
-        safeCallback(callback, result);
-        socket.broadcast.emit(SocketEvents_1.socketEvents.chatMessage, message);
-      } catch (err) {
-        log.error(err);
-        safeCallback(callback, ClientError_1.ClientError.internalError());
-      }
-    }
-    async function handleEditMessage(updateMessage, socket, callback) {
-      log.debug(`Received edit message: ${JSON.stringify(updateMessage)}`);
-      try {
-        if (!updateMessage?.id || !updateMessage?.text?.trim()) {
-          safeCallback(callback, ClientError_1.ClientError.invalidError());
-          return;
-        }
-        if (updateMessage.text.length > htmlSanitizer_1.MAX_MESSAGE_CHARS) {
-          safeCallback(callback, ClientError_1.ClientError.tooLargeError());
-          return;
-        }
-        const repository = (0, config_1.getMessageRepository)();
-        const message = await repository.find(updateMessage.id);
-        if (!message) {
-          safeCallback(callback, ClientError_1.ClientError.notExistsError());
-          return;
-        }
-        const loggedInUser = socket.request.session.userInfo;
-        if (message.username != loggedInUser.username) {
-          safeCallback(callback, ClientError_1.ClientError.accessDeniedError());
-          return;
-        }
-        message.text = (0, htmlSanitizer_1.sanitizeMessageHtml)(updateMessage.text);
-        if (!message.text.trim()) {
-          safeCallback(callback, ClientError_1.ClientError.invalidError());
-          return;
-        }
-        message.edited_at = (/* @__PURE__ */ new Date()).toISOString();
-        const updatedMessage = await repository.update(message);
-        safeCallback(callback, updatedMessage);
-        socket.broadcast.emit(SocketEvents_1.socketEvents.editedMessage, updatedMessage);
-      } catch (err) {
-        log.error(err);
-        safeCallback(callback, ClientError_1.ClientError.internalError());
-      }
-    }
-    async function handleReactMessage(reactedMessage, socket, callback) {
-      log.debug(`Received reaction to message: ${JSON.stringify(reactedMessage)}`);
-      try {
-        if (!reactedMessage?.id)
-          throw ClientError_1.ClientError.invalidError();
-        const repository = (0, config_1.getMessageRepository)();
-        const message = await repository.find(reactedMessage.id);
-        if (!message)
-          throw ClientError_1.ClientError.invalidError();
-        const curUserName = socket.request.session.userInfo.username;
-        if (!message.reactions || typeof message.reactions !== "object")
-          message.reactions = {};
-        for (const emoji of Object.keys(reactedMessage.reactions || {})) {
-          const incoming = reactedMessage.reactions[emoji];
-          if (!incoming || !Array.isArray(incoming.usernames))
-            continue;
-          if (!message.reactions[emoji] || !Array.isArray(message.reactions[emoji].usernames))
-            message.reactions[emoji] = { usernames: [] };
-          const userList = message.reactions[emoji].usernames;
-          const foundUsr = incoming.usernames.find((usrname) => usrname == curUserName);
-          const curUsr = userList.find((usrname) => usrname == curUserName);
-          if (foundUsr && !curUsr)
-            userList.push(curUserName);
-          else if (!foundUsr && curUsr)
-            message.reactions[emoji].usernames = userList.filter((usr) => usr != curUserName);
-        }
-        reactedMessage.reactions = message.reactions;
-        await repository.update(message);
-        safeCallback(callback, reactedMessage);
-        socket.broadcast.emit(SocketEvents_1.socketEvents.reactedMessage, reactedMessage);
-      } catch (err) {
-        log.error(err);
-        safeCallback(callback, ClientError_1.ClientError.internalError());
-      }
-    }
-    async function handleDeleteChat(socket, callback) {
-      log.debug(`Received delete chat request.`);
-      try {
-        if (!socket.request.session.userInfo.isAdmin) {
-          safeCallback(callback, ClientError_1.ClientError.accessDeniedError());
-          return;
-        }
-        const repository = (0, config_1.getMessageRepository)();
-        await repository.removeAll();
-        safeCallback(callback, "ok");
-        socket.broadcast.emit(SocketEvents_1.socketEvents.chatDeleted);
-      } catch (err) {
-        log.error(err);
-        safeCallback(callback, ClientError_1.ClientError.internalError());
-      }
-    }
-    async function handleDeleteMessage(id, socket, callback) {
-      try {
-        if (!id) {
-          safeCallback(callback, ClientError_1.ClientError.invalidError());
-          return;
-        }
-        const loggedInUser = socket.request.session.userInfo;
-        const repository = (0, config_1.getMessageRepository)();
-        const message = await repository.find(id);
-        if (!message) {
-          safeCallback(callback, { status: false });
-          return;
-        }
-        if (message.username != loggedInUser.username && !loggedInUser.isAdmin) {
-          safeCallback(callback, ClientError_1.ClientError.accessDeniedError());
-          return;
-        }
-        const result = await repository.remove(id);
-        if (result) {
-          log.debug(`Deleted message with id: ${id}`);
-          socket.broadcast.emit(SocketEvents_1.socketEvents.deletedMessage, id);
-          safeCallback(callback, { status: true });
-        } else {
-          log.debug(`Failed to delete msg ${id}, as the id doesn't exist`);
-          safeCallback(callback, { status: false });
-        }
-      } catch (err) {
-        log.error(err);
-        safeCallback(callback, { status: false, error: ClientError_1.ClientError.internalError() });
-      }
-    }
-    async function handleUpdateNotice(socket, callback) {
-      try {
-        if (!socket.request.session.userInfo?.isAdmin) {
-          safeCallback(callback, JSON.stringify({ success: false, error: "client_error.access_denied" }));
-          return;
-        }
-        socket.broadcast.emit(SocketEvents_1.socketEvents.updateNotice);
-        safeCallback(callback, JSON.stringify({ success: true }));
-      } catch (err) {
-        log.error(err);
-        safeCallback(callback, JSON.stringify({ success: false }));
-      }
-    }
-    async function handleUpdateFsNotice(socket, callback) {
-      try {
-        if (!socket.request.session.userInfo?.isAdmin) {
-          safeCallback(callback, JSON.stringify({ success: false, error: "client_error.access_denied" }));
-          return;
-        }
-        socket.broadcast.emit(SocketEvents_1.socketEvents.updateFsNotice);
-        safeCallback(callback, JSON.stringify({ success: true }));
-      } catch (err) {
-        log.error(err);
-        safeCallback(callback, JSON.stringify({ success: false }));
-      }
-    }
-  }
-});
-
-// server/src/socket/userHandler.js
-var require_userHandler = __commonJS({
-  "server/src/socket/userHandler.js"(exports2) {
-    "use strict";
-    var __importDefault = exports2 && exports2.__importDefault || function(mod) {
-      return mod && mod.__esModule ? mod : { "default": mod };
-    };
-    Object.defineProperty(exports2, "__esModule", { value: true });
-    exports2.broadcastUsersList = broadcastUsersList;
-    exports2.handleChangeStatus = handleChangeStatus;
-    exports2.handleTriggerTyping = handleTriggerTyping;
-    var logger_1 = __importDefault(require_logger2());
-    var UserDto_1 = require_UserDto();
-    var ClientError_1 = require_ClientError();
-    var UserCrudService_1 = require_userCrudService();
-    var config_1 = require_repositoryFactory();
-    var SocketEvents_1 = require_socketEvents();
-    var permissions_1 = require_permissions();
-    var log = (0, logger_1.default)(__filename);
-    var cachedUsers = [];
-    async function broadcastUsersList(io) {
-      try {
-        let dbUsers = await (0, UserCrudService_1.getUsers)();
-        dbUsers = dbUsers.filter((user) => user.active);
-        const activeUsers = getActiveUsers(io);
-        let updatedUsers = dbUsers.map((user) => updateUserStatus(user, activeUsers));
-        updatedUsers = updatedUsers.filter((user) => user.status === UserDto_1.userStatuses.online);
-        let setting = null;
-        try {
-          const settings = await (0, config_1.getSettingRepository)().get();
-          setting = settings[0] || null;
-        } catch (settingErr) {
-          log.error(settingErr);
-        }
-        const failOpen = setting === null;
-        for (const socket of io.sockets.sockets.values()) {
-          const session = socket.request?.session?.userInfo;
-          const maySeeAll = failOpen || (0, permissions_1.canSeeOnlineUsers)(setting, session);
-          const payload = maySeeAll ? updatedUsers : updatedUsers.filter((u) => u.username === session?.username);
-          socket.emit(SocketEvents_1.socketEvents.usersWithStatus, payload);
-        }
-      } catch (err) {
-        log.error(err);
-      }
-    }
-    function getActiveUsers(io) {
-      return Array.from(io.sockets.sockets.values()).map(({ id, handshake, request }) => {
-        const { time } = handshake;
-        const username = request.session.userInfo.username;
-        return { socketId: id, username, connectedAt: time };
-      });
-    }
-    function updateUserStatus(user, activeUsers) {
-      const activeUser = activeUsers.find((activeUser2) => activeUser2.username === user.username);
-      const time = activeUser ? new Date(activeUser.connectedAt).toISOString() : user.lastLoginDate || user.createdDate;
-      const socketId = activeUser ? activeUser.socketId : void 0;
-      const cachedUserIndex = cachedUsers.findIndex((cachedUser) => cachedUser.username === user.username);
-      const status = activeUser ? UserDto_1.userStatuses.online : UserDto_1.userStatuses.offline;
-      const updatedUser = {
-        username: user.username,
-        status,
-        time,
-        socketId,
-        active: user.active,
-        typing: false
-      };
-      if (cachedUserIndex === -1) {
-        cachedUsers.push(updatedUser);
-      } else {
-        cachedUsers[cachedUserIndex] = updatedUser;
-      }
-      return updatedUser;
-    }
-    async function handleChangeStatus(user, socket, callback) {
-      log.debug(`Received update status to user: ${JSON.stringify(user)}`);
-      try {
-        const username = socket.request.session.userInfo?.username;
-        const cuIndex = cachedUsers.findIndex((u) => u.username == username);
-        const cUser = cachedUsers[cuIndex];
-        if (cUser) {
-          cachedUsers[cuIndex].status = user?.status;
-          cachedUsers[cuIndex].username = username;
-          if (typeof callback === "function") {
-            callback(cUser);
-          }
-          socket.broadcast.emit(SocketEvents_1.socketEvents.changedStatus, cUser);
-        } else {
-          if (typeof callback === "function") {
-            callback({ ...user, username });
-          }
-        }
-      } catch (err) {
-        log.error(err);
-        if (typeof callback === "function")
-          callback(ClientError_1.ClientError.internalError());
-      }
-    }
-    var lastTypingBroadcast = /* @__PURE__ */ new Map();
-    var TYPING_MIN_INTERVAL_MS = 1200;
-    async function handleTriggerTyping(user, socket, callback) {
-      try {
-        const username = socket.request.session.userInfo?.username;
-        const typing = user?.typing !== false;
-        const now = Date.now();
-        const last = lastTypingBroadcast.get(username) || 0;
-        if (typing && now - last < TYPING_MIN_INTERVAL_MS) {
-          if (typeof callback === "function")
-            callback(JSON.stringify({ ...user, username, typing: true }));
-          return;
-        }
-        lastTypingBroadcast.set(username, now);
-        const payload = { ...user || {}, username, typing };
-        log.debug(`Broadcasting typing status: ${JSON.stringify(payload)}`);
-        if (typeof callback === "function") {
-          callback(JSON.stringify(payload));
-        }
-        socket.broadcast.emit(SocketEvents_1.socketEvents.typingMessage, payload);
-      } catch (err) {
-        log.error(err);
-        if (typeof callback === "function")
-          callback(JSON.stringify({ error: true }));
-      }
-    }
-  }
-});
-
-// server/src/models/Message.js
-var require_Message = __commonJS({
-  "server/src/models/Message.js"(exports2) {
-    "use strict";
-    Object.defineProperty(exports2, "__esModule", { value: true });
-    exports2.Message = void 0;
-    var BaseModel_1 = require_BaseModel();
-    var User_1 = require_User();
-    var ReplyTo = class {
-      id;
-      username;
-      text;
-      constructor(json) {
-        this.id = json.id;
-        this.text = typeof json.text === "string" ? json.text.substr(0, 50) : "";
-        this.username = json.username;
-      }
-    };
-    var Message = class extends BaseModel_1.BaseModel {
-      text;
-      username;
-      time;
-      replyTo;
-      edited_at;
-      role = User_1.RoleEnum.NON_ADMIN;
-      reactions;
-      constructor(json = {}) {
-        super(json);
-        this.text = json.text || "";
-        this.username = json.username || "";
-        this.time = json.time || "";
-        this.replyTo = json.replyTo ? new ReplyTo(json.replyTo) : null;
-        this.reactions = json.reactions || {};
-      }
-    };
-    exports2.Message = Message;
-  }
-});
-
-// server/src/socket/socketService.js
-var require_socketService = __commonJS({
-  "server/src/socket/socketService.js"(exports2) {
-    "use strict";
-    Object.defineProperty(exports2, "__esModule", { value: true });
-    var chatHandler_1 = require_chatHandler();
-    var userHandler_1 = require_userHandler();
-    var Message_1 = require_Message();
-    var SocketEvents_1 = require_socketEvents();
-    function socketService(io) {
-      const onConnection = (socket) => {
-        const sessionId = socket.request.session.id;
-        socket.join(sessionId);
-        socket.on(SocketEvents_1.socketEvents.disconnect, () => {
-          (0, userHandler_1.broadcastUsersList)(io);
-        });
-        (0, userHandler_1.broadcastUsersList)(io);
-        socket.on(SocketEvents_1.socketEvents.editMessage, (message, callback) => {
-          (0, chatHandler_1.handleEditMessage)(message, socket, callback);
-        });
-        socket.on(SocketEvents_1.socketEvents.reactMessage, (message, callback) => {
-          (0, chatHandler_1.handleReactMessage)(message, socket, callback);
-        });
-        socket.on(SocketEvents_1.socketEvents.deleteMessage, (id, callback) => {
-          (0, chatHandler_1.handleDeleteMessage)(id, socket, callback);
-        });
-        socket.on(SocketEvents_1.socketEvents.deleteChat, (callback) => {
-          (0, chatHandler_1.handleDeleteChat)(socket, callback);
-        });
-        socket.on(SocketEvents_1.socketEvents.chatMessage, (message, callback) => {
-          (0, chatHandler_1.handleChatMessage)(new Message_1.Message(message), callback, socket);
-        });
-        socket.on(SocketEvents_1.socketEvents.updateNotice, (callback) => {
-          (0, chatHandler_1.handleUpdateNotice)(socket, callback);
-        });
-        socket.on(SocketEvents_1.socketEvents.updateFsNotice, (callback) => {
-          (0, chatHandler_1.handleUpdateFsNotice)(socket, callback);
-        });
-        socket.on(SocketEvents_1.socketEvents.changeStatus, (user, callback) => {
-          (0, userHandler_1.handleChangeStatus)(user, socket, callback);
-        });
-        socket.on(SocketEvents_1.socketEvents.triggerTyping, (user, callback) => {
-          (0, userHandler_1.handleTriggerTyping)(user, socket, callback);
-        });
-      };
-      io.on("connection", onConnection);
-    }
-    exports2["default"] = socketService;
   }
 });
 

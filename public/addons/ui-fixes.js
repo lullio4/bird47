@@ -8,6 +8,10 @@
        removes the FAB itself once the navbar mounts; we only make sure it
        never appears for logged-out/anonymous visitors and never stays
        without a navbar group — purely visual, no behavior changes.
+   #4 (owner request): the bundled app renders the admin-panel link as
+       <a href="/admin" target="_blank"> — it sometimes opens a NEW TAB.
+       The minified bundle must not be edited (project rule), so the fix
+       lives in the EXISTING loop below (no new file/page variation needed).
 */
 (() => {
   "use strict";
@@ -67,12 +71,23 @@
     }
   }
 
+  // #4: the app's own admin link must open in the SAME tab (owner request).
+  // Runs inside the existing 1.2 s loop — no separate file/wiring needed.
+  function fixAdminLinks() {
+    document.querySelectorAll('a[href="/admin"][target="_blank"]').forEach((a) => {
+      a.target = "_self";
+      a.removeAttribute("rel"); // noopener is only meaningful for _blank
+    });
+  }
+
   let tick = 0;
   setInterval(async () => {
     if (tick++ % 5 === 0) await probe(); // every 6 s
     detectHiddenPanel();
     apply();
     fixFab();
+    fixAdminLinks();
   }, 1200);
   probe().then(() => { apply(); });
+  fixAdminLinks();
 })();

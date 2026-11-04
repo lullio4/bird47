@@ -6,6 +6,7 @@ const userHandler_1 = require("./userHandler.js");
 const Message_1 = require("../models/Message.js");
 const SocketEvents_1 = require("./socketEvents.js");
 function socketService(io) {
+    setLiveIo(io); // REST endpoints reuse this instance (see getLiveIo)
     // Define the event handler for socket connection
     const onConnection = (socket) => {
         const sessionId = socket.request.session.id;
@@ -61,3 +62,13 @@ function socketService(io) {
     io.on("connection", onConnection);
 }
 exports["default"] = socketService;
+/**
+ * Live Socket.IO server reference — set by socketService() at boot so that
+ * non-socket entry points (e.g. the REST reaction endpoint in chatController)
+ * can broadcast to the same room the app's own socket lives in.
+ */
+let liveIo = null;
+const setLiveIo = (io) => { liveIo = io; };
+const getLiveIo = () => liveIo;
+exports.setLiveIo = setLiveIo;
+exports.getLiveIo = getLiveIo;

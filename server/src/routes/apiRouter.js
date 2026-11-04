@@ -57,6 +57,10 @@ router.post("/chat/restoreFrequentSymbols", SettingController_1.restoreFrequentS
 router.put("/chat/saveFrequentSymbols", SettingController_1.saveFrequentSymbols);
 router.post("/chat/getMessages", ChatController_1.getMessages);
 router.post("/chat/getMissingMessages", ChatController_1.getMissingMessages);
+// REST twin of the socket reactMessage — the addon picker sends through this
+// (same http path as the app's other calls); UI updates via the reactedMessage
+// broadcast on the app's own socket
+router.post("/chat/react", ChatController_1.reactMessage);
 router.put("/chat/updateNotice", SettingController_1.updateNotice);
 // fullscreen login notice — read by any logged-in user, written by admins only
 router.get("/chat/getFsNotice", SettingController_1.getFsNotice);

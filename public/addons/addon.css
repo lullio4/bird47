@@ -62,15 +62,19 @@
 
 /* ---------- navbar copy button (looks native, sits with the other icons) ---------- */
 .bca-navcopy,
-.bca-navadmin {
+.bca-navadmin,
+.bca-navatt {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 15px;
   line-height: 1;
+  overflow: visible;      /* half-cut icon fix: never clip the glyph */
+  flex: 0 0 auto;
 }
 .bca-navcopy svg,
-.bca-navadmin svg { pointer-events: none; }
+.bca-navadmin svg,
+.bca-navatt svg { pointer-events: none; display: block; }
 
 /* ---------- popup (drops from the navbar copy button) ---------- */
 .bca-popup {

@@ -156,6 +156,12 @@
     const bar = overlay.querySelector(".bca-fsbar");
     const tail = document.createElement("div");
     tail.className = "bca-fstail";
+    // inline (owner request): the button flows on the SAME line where the
+    // notice text ends — not on its own line below. Works because the
+    // notice is authored as inline text + <br> lines; if the notice ends
+    // with a block element (div/p), the button naturally starts after it.
+    tail.style.display = "inline";
+    tail.style.marginLeft = "10px";
     tail.appendChild(okBtn);
     inner.appendChild(tail);
     host().appendChild(overlay);

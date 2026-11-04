@@ -4,7 +4,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.exportChat = exports.getMissingMessages = exports.getMessages = void 0;
+exports.exportChat = exports.reactMessage = exports.getMissingMessages = exports.getMessages = void 0;
+const socketService_1 = require("../socket/socketService.js");
+const SocketEvents_1 = require("../socket/socketEvents.js");
+const socketEvents_1 = require("../socket/socketEvents.js");
 const logger_1 = __importDefault(require("../logger.js"));
 const ClientError_1 = require("../models/ClientError.js");
 const config_1 = require("../config/repositoryFactory.js");
@@ -116,6 +119,57 @@ const exportChat = async (req, res) => {
     }
 };
 exports.exportChat = exportChat;
+/**
+ * REST twin of the socket "reactMessage" handler (server/src/socket/chatHandler.js):
+ * the addon's custom-emoji picker sends through the SAME http path as every
+ * other addon call — no second websocket needed; the UI still updates through
+ * the app's own socket via the reactedMessage broadcast (sender included).
+ */
+const reactMessage = async (req, res) => {
+    try {
+        const reactedMessage = req.body || {};
+        if (!reactedMessage?.id)
+            throw ClientError_1.ClientError.invalidError();
+        const repository = (0, config_1.getMessageRepository)();
+        const message = await repository.find(reactedMessage.id);
+        // mirror the socket handler: a missing message falls into the same
+        // catch → internalError (500) — NOT invalidError (400)
+        if (!message)
+            throw new Error("message not found");
+        const curUserName = req.session?.userInfo?.username;
+        if (!curUserName)
+            throw ClientError_1.ClientError.accessDeniedError();
+        if (!message.reactions || typeof message.reactions !== "object")
+            message.reactions = {};
+        for (const emoji of Object.keys(reactedMessage.reactions || {})) {
+            const incoming = reactedMessage.reactions[emoji];
+            // tolerate malformed payloads (mirrors the socket handler)
+            if (!incoming || !Array.isArray(incoming.usernames))
+                continue;
+            if (!message.reactions[emoji] || !Array.isArray(message.reactions[emoji].usernames))
+                message.reactions[emoji] = { usernames: [] };
+            const userList = message.reactions[emoji].usernames;
+            const foundUsr = incoming.usernames.find((usrname) => usrname == curUserName);
+            const curUsr = userList.find((usrname) => usrname == curUserName);
+            if (foundUsr && !curUsr)
+                userList.push(curUserName);
+            else if (!foundUsr && curUsr)
+                message.reactions[emoji].usernames = userList.filter((usr) => usr != curUserName);
+        }
+        reactedMessage.reactions = message.reactions;
+        await repository.update(message);
+        res.status(200).json(reactedMessage);
+        // same broadcast the socket path uses — the app's own socket (and every
+        // other client) applies the new reaction live; sender included
+        const io = (0, socketService_1.getLiveIo)();
+        if (io)
+            io.emit(SocketEvents_1.socketEvents.reactedMessage, reactedMessage);
+    }
+    catch (error) {
+        handleError(error, res);
+    }
+};
+exports.reactMessage = reactMessage;
 /**
  * Handles errors and sends appropriate HTTP responses.
  *
