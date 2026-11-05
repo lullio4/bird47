@@ -104,6 +104,8 @@
       attLinkLabel: "Open the attendance counter page (opens in a new tab)",
       attOpenPage: "Attendance counter",
       attEditorLabel: "HTML code of the page",
+      attNoteLabel: "Shared note (visible on the attendance page)",
+      attNoteSave: "Save note",
       attHint: "",
       attSave: "Save code",
       attSaving: "Saving…",
@@ -211,6 +213,8 @@
       attLinkLabel: "হাজিরা কাউন্টার পেজ খুলুন (নতুন ট্যাবে খুলবে)",
       attOpenPage: "হাজিরা কাউন্টার",
       attEditorLabel: "পেজের HTML কোড",
+      attNoteLabel: "শেয়ার্ড নোট (হাজিরা পেজে দেখা যাবে)",
+      attNoteSave: "নোট সেভ করুন",
       attHint: "",
       attSave: "কোড সেভ করুন",
       attSaving: "সেভ হচ্ছে…",
@@ -1075,6 +1079,14 @@
         </div>
         <div class="bca-hint bca-att-note"></div>
       </div>
+      <div class="bca-setting bca-att-note-setting">
+        <div class="bca-setting-label bca-att-note-label"></div>
+        <textarea class="bca-att-note-editor" spellcheck="false" style="width:100%;min-height:90px;font:inherit;padding:8px;border-radius:8px;border:1px solid #c9d1da;box-sizing:border-box;"></textarea>
+        <div class="bca-editor-bar">
+          <span class="bca-att-note-msg"></span>
+          <button type="button" class="bca-btn bca-att-note-save"></button>
+        </div>
+      </div>
       <div class="bca-setting">
         <div class="bca-setting-label bca-att-editor-label"></div>
         <textarea class="bca-editor" spellcheck="false" wrap="off"></textarea>
@@ -1099,6 +1111,46 @@
     link.textContent = url;
     const copyLink = pane.querySelector(".bca-copy-link");
     copyLink.textContent = s.attCopyLink;
+
+    // --- shared note editor (same access as the page: admin + selected) ---
+    const noteTa = pane.querySelector(".bca-att-note-editor");
+    const noteMsgTa = pane.querySelector(".bca-att-note-msg");
+    const noteSaveTa = pane.querySelector(".bca-att-note-save");
+    noteSaveTa.textContent = s.attNoteSave;
+    pane.querySelector(".bca-att-note-label").textContent = s.attNoteLabel;
+    const loadNote = async () => {
+      try {
+        const res = await fetch("/api/chat/attendance-note", { credentials: "same-origin" });
+        if (res.ok) {
+          const j = await res.json().catch(() => null);
+          if (j && typeof j.note === "string") noteTa.value = j.note;
+        }
+      } catch { /* transient */ }
+    };
+    loadNote();
+    noteSaveTa.addEventListener("click", async () => {
+      try {
+        noteSaveTa.disabled = true;
+        const res = await fetch("/api/chat/attendance-note", {
+          method: "PUT",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ note: noteTa.value }),
+        });
+        const j = await res.json().catch(() => null);
+        if (res.ok) {
+          noteMsgTa.textContent = s.saved;
+          noteTa.value = j && typeof j.note === "string" ? j.note : noteTa.value;
+        } else {
+          noteMsgTa.textContent = s.fetchFail;
+        }
+      } catch {
+        noteMsgTa.textContent = s.fetchFail;
+      } finally {
+        noteSaveTa.disabled = false;
+        setTimeout(() => { noteMsgTa.textContent = ""; }, 2500);
+      }
+    });
 
     const saveBtn = pane.querySelector(".bca-att-save");
     saveBtn.textContent = s.attSave;
@@ -1903,6 +1955,10 @@
 
   /** fallback when the navbar isn't available: floating button */
   function addFab() {
+    // chat page only: never on /login, /register, /admin (owner screenshot —
+    // the FAB floated over the bare login form; the navbar isn't there yet
+    // but the page is clearly not the chat)
+    if (!document.querySelector('div[id^="message-"]')) return;
     if (root().querySelector(".bca-fab")) return;
     const s = S();
     const fab = document.createElement("button");

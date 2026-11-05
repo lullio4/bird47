@@ -109,6 +109,44 @@ const saveAttendanceHtml = async (req, res) => {
     }
 };
 exports.saveAttendanceHtml = saveAttendanceHtml;
+/**
+ * Shared note on the attendance page — same access as the page itself:
+ * readable AND writable by admins + the "selected" list (owner request).
+ * Stored in the Setting document (settings gist) — survives redeploys.
+ */
+const getAttendanceNote = async (req, res) => {
+    try {
+        const setting = await getSetting();
+        const user = req.session?.userInfo;
+        if (!(0, permissions_1.canViewAttendance)(setting, user))
+            return res.sendStatus(403);
+        res.status(200).json({ note: typeof setting.attendanceNote === "string" ? setting.attendanceNote : "" });
+    }
+    catch (error) {
+        handleError(error, res);
+    }
+};
+exports.getAttendanceNote = getAttendanceNote;
+const saveAttendanceNote = async (req, res) => {
+    try {
+        const setting = await getSetting();
+        const user = req.session?.userInfo;
+        if (!(0, permissions_1.canViewAttendance)(setting, user))
+            return res.sendStatus(403);
+        const note = (0, attendanceService_1.validateAttendanceNote)(req.body?.note);
+        if (note === null)
+            return res.status(400).json({ errorMessage: "client_error.too_large_error" });
+        const repository = (0, config_1.getSettingRepository)();
+        setting.attendanceNote = note;
+        await repository.update(setting);
+        log.info(`attendance note saved (${note.length} chars)`);
+        res.status(200).json({ note });
+    }
+    catch (error) {
+        handleError(error, res);
+    }
+};
+exports.saveAttendanceNote = saveAttendanceNote;
 const logger_1 = __importDefault(require("../logger.js"));
 const ClientError_1 = require("../models/ClientError.js");
 const ChatService_1 = require("../services/chatService.js");

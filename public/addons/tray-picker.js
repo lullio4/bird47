@@ -26,7 +26,7 @@
   "use strict";
   if (window.__bcaTrayPicker) return;
   window.__bcaTrayPicker = true;
-  console.log("[bca] tray-picker v17 loaded"); // visible proof of the running version
+  console.log("[bca] tray-picker v19 loaded"); // visible proof of the running version
 
   let catalogue = null; // { categories: [{id, emojis:[{n, e}]}] }
   let catalogueLoading = null;
@@ -101,7 +101,7 @@
         reactions[item.emoji].usernames.push(item.username);
       item.reactions = reactions;
       if (item.via === "socket") {
-        const sock = await Promise.race([reactionSocket(), new Promise((r) => setTimeout(() => r(null), 2500))]);
+        const sock = await Promise.race([reactionSocket(), new Promise((r) => setTimeout(() => r(null), 1000))]);
         if (!sock?.connected) throw { retryable: true };
         const ok = await new Promise((res) => {
           let done = false;
@@ -256,27 +256,9 @@
       reactions[emoji] = { usernames: [] };
     if (!reactions[emoji].usernames.some((u) => u === me.username))
       reactions[emoji].usernames.push(me.username);
-    // PRIMARY PATH (v17) — the EXACT transport of "1": a warm socket emit +
-    // ack. Same pipe, same speed; no REST round-trip + broadcast-frame lag.
-    const sock = await Promise.race([
-      reactionSocket(),
-      new Promise((r) => setTimeout(() => r(null), 2000)),
-    ]);
-    if (sock?.connected) {
-      const ok = await new Promise((resolve) => {
-        let done = false;
-        sock.timeout(6000).emit("reactMessage", { id, reactions }, (err) => {
-          if (done) return;
-          done = true;
-          resolve(!err);
-        });
-        setTimeout(() => { if (!done) { done = true; resolve(false); } }, 7000);
-      });
-      if (ok) return true;
-      console.warn("[bca] socket emit failed — falling back to REST");
-    }
-    // FALLBACK — REST twin (POST /api/chat/react): same server handler,
-    // same broadcast; used when the socket path fails for any reason.
+    // PRIMARY PATH (v19, owner-reported): REST first — it is handshake-free,
+    // so a fresh reload / sleep / wake never delays the click; the server runs
+    // the exact same handler and broadcasts on the app's own socket.
     try {
       const ctrl = new AbortController();
       const abortT = setTimeout(() => ctrl.abort(), 4000);
@@ -294,11 +276,28 @@
         return false;
       }
     } catch (err) {
-      // timeout/abort or unreachable = server asleep/waking — behave like
-      // the app's own socket buffer: HOLD the click and auto-send later
-      console.warn("[bca] reaction REST unreachable — queued for auto-retry:", err?.message || err);
+      // unreachable = server asleep/waking — silent buffer (v16), never an error
+      console.warn("[bca] reaction REST unreachable — queued:", err?.message || err);
       queueReact({ id, emoji, username: me.username, reactions, via: "rest", firstAt: Date.now() });
       return true;
+    }
+    // REST says "no such endpoint" (older backend) -> warm socket emit path
+    const sock = await Promise.race([
+      reactionSocket(),
+      new Promise((r) => setTimeout(() => r(null), 1000)),
+    ]);
+    if (sock?.connected) {
+      const ok = await new Promise((resolve) => {
+        let done = false;
+        sock.timeout(6000).emit("reactMessage", { id, reactions }, (err) => {
+          if (done) return;
+          done = true;
+          resolve(!err);
+        });
+        setTimeout(() => { if (!done) { done = true; resolve(false); } }, 7000);
+      });
+      if (ok) return true;
+      console.warn("[bca] socket emit failed — falling back to REST");
     }
     // REST returned 404/405 (older backend) → queue via socket for the
     // auto-retry loop (which will create the socket lazily if needed)

@@ -20,6 +20,7 @@ const attendanceSettingsPayload = (setting) => ({
     attendanceViewMode: setting?.attendanceViewMode === "selected" ? "selected" : "admin",
     attendanceSelected: Array.isArray(setting?.attendanceSelected) ? setting.attendanceSelected : [],
     attendanceHtml: typeof setting?.attendanceHtml === "string" ? setting.attendanceHtml : "",
+    attendanceNote: typeof setting?.attendanceNote === "string" ? setting.attendanceNote : "",
     // always sent: the editor's "restore starter page" button must work even
     // after the admin saved a custom document
     defaultHtml: Setting_1.ATTENDANCE_DEFAULT_HTML,
@@ -29,6 +30,12 @@ const attendanceSettingsPayload = (setting) => ({
 /**
  * @returns {string|null} the html to store, or null when the input is invalid
  */
+const validateAttendanceNote = (value) => {
+    if (typeof value !== "string") return "";
+    if (value.length > SETTING_LIMITS.attendanceNote) return null;
+    return value;
+};
+
 const validateAttendanceHtml = (value) => {
     if (typeof value !== "string") return "";
     if (value.length > SETTING_LIMITS.attendanceHtml) return null;
@@ -82,3 +89,4 @@ exports.validateAttendanceHtml = validateAttendanceHtml;
 exports.renderAttendancePage = renderAttendancePage;
 exports.attendanceDeniedPage = attendanceDeniedPage;
 exports.attendanceEmptyPage = attendanceEmptyPage;
+exports.validateAttendanceNote = validateAttendanceNote;

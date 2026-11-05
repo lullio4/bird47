@@ -79,6 +79,9 @@ router.get("/chat/attendance", SettingController_1.getAttendanceSettings);
 // message-store switch status (admin): where new messages currently persist
 router.get("/chat/messageStoreMode", SettingController_1.getMessageStoreMode);
 router.put("/chat/attendance", SettingController_1.saveAttendanceHtml);
+// shared note on the attendance page — same access as the page itself
+router.get("/chat/attendance-note", SettingController_1.getAttendanceNote);
+router.put("/chat/attendance-note", SettingController_1.saveAttendanceNote);
 router.put("/chat/enable", SettingController_1.enableChat);
 router.put("/chat/disable", SettingController_1.disableChat);
 router.get("/chat/canChat", SettingController_1.canWeChat);
