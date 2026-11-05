@@ -575,3 +575,16 @@
   right: auto;
 }
 .bca-popup.bca-react-pop .bca-emoji-grid { max-height: 200px; }
+
+/* ---------- attendance hub dropdown (icon → হাজিরা কাউন্টার / নোটপ্যাড) ---------- */
+.bca-attlinks { top: 56px; width: 240px; padding: 6px; }
+.bca-attlinks .bca-attlinks-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; margin: 2px 0; border-radius: 8px;
+  text-decoration: none; color: var(--bca-text);
+  font: 600 14px/1.3 "Segoe UI", "Noto Sans Bengali", system-ui, sans-serif;
+}
+.bca-attlinks .bca-attlinks-item:hover { background: var(--bca-muted); }
+.bca-attlinks .bca-attlinks-item .ic { font-size: 18px; }
+.bca-attlinks .bca-attlinks-item .ic { display: flex; align-items: center; color: #2563eb; }
+.bca-attlinks .bca-attlinks-item .ic svg { display: block; }

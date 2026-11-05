@@ -1,6 +1,6 @@
 {
   "name": "bird-chat",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "private": true,
   "description": "Our Discussion Room — chat server (reconstructed from bundle) + build tooling",
   "main": "index.js",

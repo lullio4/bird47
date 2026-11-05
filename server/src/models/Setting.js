@@ -76,12 +76,6 @@ const ATTENDANCE_DEFAULT_HTML = `<!doctype html>
     <button id="reset" class="ghost">রিসেট</button>
   </div>
   <ul id="list"></ul>
-  <p style="margin:24px 0 8px; font-weight:600;">নোট</p>
-  <textarea id="note" style="width:100%;min-height:120px;font:inherit;padding:8px 12px;border-radius:8px;border:1px solid #c9d1da;box-sizing:border-box;"></textarea>
-  <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
-    <button id="noteSave">নোট সেভ করুন</button>
-    <span id="noteMsg" style="font-size:13px;color:#5b6572;"></span>
-  </div>
   <p class="empty" id="empty">এখনো কেউ হাজিরা দেয়নি।</p>
   <script>
     (function () {
@@ -119,25 +113,6 @@ const ATTENDANCE_DEFAULT_HTML = `<!doctype html>
       };
       document.getElementById("reset").onclick = function () { write([]); render(); };
       render();
-      // --- shared note (server-stored; same access as this page) ---
-      var noteBox = document.getElementById("note");
-      var noteMsg = document.getElementById("noteMsg");
-      fetch("/api/chat/attendance-note", { credentials: "same-origin" })
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (j) { if (j && typeof j.note === "string") noteBox.value = j.note; })
-        .catch(function () {});
-      document.getElementById("noteSave").onclick = function () {
-        noteMsg.textContent = "…";
-        fetch("/api/chat/attendance-note", {
-          method: "PUT",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ note: noteBox.value })
-        }).then(function (r) {
-          noteMsg.textContent = r.ok ? "সেভ হয়েছে" : "সেভ হয়নি";
-          setTimeout(function () { noteMsg.textContent = ""; }, 2000);
-        }).catch(function () { noteMsg.textContent = "সেভ হয়নি"; });
-      };
     })();
   </script>
 </body>

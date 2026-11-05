@@ -59217,6 +59217,8 @@ var require_Setting = __commonJS({
     var SETTING_LIMITS = {
       /** UI-editable html for the attendance counter page (raw html, not sanitized) */
       attendanceHtml: 3e5,
+      /** shared note shown on the attendance page (plain text, not sanitized) */
+      attendanceNote: 1e5,
       /** UI-editable html/css/js for the fullscreen login notice (raw, not sanitized) */
       fsNotice: 1e5,
       /** fullscreen-notice confirm button label (plain text, short) */
@@ -59344,6 +59346,8 @@ var require_Setting = __commonJS({
       attendanceSelected;
       /** raw, admin-editiable html rendered by GET /attendance */
       attendanceHtml;
+      /** shared plain-text note shown on the attendance page (admin + selected users) */
+      attendanceNote;
       /** raw, admin-editable html/css/js shown fullscreen after every login */
       fsNotice;
       /** ISO timestamp of the last fullscreen-notice save ("" = never) */
@@ -59372,6 +59376,7 @@ var require_Setting = __commonJS({
         this.attendanceViewMode = normalizeMode(json.attendanceViewMode, "admin") === "all" ? "admin" : normalizeMode(json.attendanceViewMode, "admin");
         this.attendanceSelected = normalizeUsernames(json.attendanceSelected);
         this.attendanceHtml = typeof json.attendanceHtml === "string" ? json.attendanceHtml.slice(0, SETTING_LIMITS.attendanceHtml) : "";
+        this.attendanceNote = typeof json.attendanceNote === "string" ? json.attendanceNote.slice(0, SETTING_LIMITS.attendanceNote) : "";
         this.fsNotice = typeof json.fsNotice === "string" ? json.fsNotice.slice(0, SETTING_LIMITS.fsNotice) : "";
         this.fsNoticeUpdatedAt = typeof json.fsNoticeUpdatedAt === "string" ? json.fsNoticeUpdatedAt : "";
         this.fsNoticeOkLabel = typeof json.fsNoticeOkLabel === "string" ? json.fsNoticeOkLabel.slice(0, SETTING_LIMITS.fsNoticeOkLabel) : "";
@@ -59541,11 +59546,17 @@ var require_attendanceService = __commonJS({
       attendanceViewMode: setting?.attendanceViewMode === "selected" ? "selected" : "admin",
       attendanceSelected: Array.isArray(setting?.attendanceSelected) ? setting.attendanceSelected : [],
       attendanceHtml: typeof setting?.attendanceHtml === "string" ? setting.attendanceHtml : "",
+      attendanceNote: typeof setting?.attendanceNote === "string" ? setting.attendanceNote : "",
       // always sent: the editor's "restore starter page" button must work even
       // after the admin saved a custom document
       defaultHtml: Setting_1.ATTENDANCE_DEFAULT_HTML,
       limit: SETTING_LIMITS.attendanceHtml
     });
+    var validateAttendanceNote = (value) => {
+      if (typeof value !== "string") return "";
+      if (value.length > SETTING_LIMITS.attendanceNote) return null;
+      return value;
+    };
     var validateAttendanceHtml = (value) => {
       if (typeof value !== "string") return "";
       if (value.length > SETTING_LIMITS.attendanceHtml) return null;
@@ -59591,6 +59602,7 @@ var require_attendanceService = __commonJS({
     exports2.renderAttendancePage = renderAttendancePage;
     exports2.attendanceDeniedPage = attendanceDeniedPage;
     exports2.attendanceEmptyPage = attendanceEmptyPage;
+    exports2.validateAttendanceNote = validateAttendanceNote;
   }
 });
 
@@ -59689,6 +59701,37 @@ var require_settingController = __commonJS({
       }
     };
     exports2.saveAttendanceHtml = saveAttendanceHtml;
+    var getAttendanceNote = async (req, res) => {
+      try {
+        const setting = await getSetting();
+        const user = req.session?.userInfo;
+        if (!(0, permissions_1.canViewAttendance)(setting, user))
+          return res.sendStatus(403);
+        res.status(200).json({ note: typeof setting.attendanceNote === "string" ? setting.attendanceNote : "" });
+      } catch (error) {
+        handleError(error, res);
+      }
+    };
+    exports2.getAttendanceNote = getAttendanceNote;
+    var saveAttendanceNote = async (req, res) => {
+      try {
+        const setting = await getSetting();
+        const user = req.session?.userInfo;
+        if (!(0, permissions_1.canViewAttendance)(setting, user))
+          return res.sendStatus(403);
+        const note = (0, attendanceService_1.validateAttendanceNote)(req.body?.note);
+        if (note === null)
+          return res.status(400).json({ errorMessage: "client_error.too_large_error" });
+        const repository = (0, config_1.getSettingRepository)();
+        setting.attendanceNote = note;
+        await repository.update(setting);
+        log.info(`attendance note saved (${note.length} chars)`);
+        res.status(200).json({ note });
+      } catch (error) {
+        handleError(error, res);
+      }
+    };
+    exports2.saveAttendanceNote = saveAttendanceNote;
     var logger_1 = __importDefault(require_logger2());
     var ClientError_1 = require_ClientError();
     var ChatService_1 = require_chatService();
@@ -60624,6 +60667,8 @@ var require_apiRouter = __commonJS({
     router.get("/chat/attendance", SettingController_1.getAttendanceSettings);
     router.get("/chat/messageStoreMode", SettingController_1.getMessageStoreMode);
     router.put("/chat/attendance", SettingController_1.saveAttendanceHtml);
+    router.get("/chat/attendance-note", SettingController_1.getAttendanceNote);
+    router.put("/chat/attendance-note", SettingController_1.saveAttendanceNote);
     router.put("/chat/enable", SettingController_1.enableChat);
     router.put("/chat/disable", SettingController_1.disableChat);
     router.get("/chat/canChat", SettingController_1.canWeChat);
@@ -62211,6 +62256,128 @@ var require_memorystore2 = __commonJS({
   }
 });
 
+// server/src/services/linksService.js
+var require_linksService = __commonJS({
+  "server/src/services/linksService.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.validateNotePut = exports2.notepadPage = exports2.linksPage = exports2.SETTINGS_HEADERS = void 0;
+    var SETTING_LIMITS_REF = require_Setting();
+    var SETTINGS_HEADERS = {
+      "Content-Type": "text/html; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+      "Cache-Control": "no-store, max-age=0",
+      "X-Frame-Options": "SAMEORIGIN"
+    };
+    exports2.SETTINGS_HEADERS = SETTINGS_HEADERS;
+    var validateNotePut = (value) => {
+      if (typeof value !== "string") return "";
+      if (value.length > SETTING_LIMITS_REF.SETTING_LIMITS.attendanceNote) return null;
+      return value;
+    };
+    exports2.validateNotePut = validateNotePut;
+    var linksPage = () => ({
+      status: 200,
+      headers: SETTINGS_HEADERS,
+      body: `<!doctype html>
+<html lang="bn">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>\u09AA\u09C7\u099C-\u09A4\u09BE\u09B2\u09BF\u0995\u09BE</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; padding: 32px 16px; font-family: "Noto Sans Bengali", "Hind Siliguri", system-ui, sans-serif;
+         background: #f6f7f9; color: #1b1f24; }
+  h1 { font-size: 20px; margin: 0 0 18px; }
+  a.item { display: flex; align-items: center; gap: 10px; padding: 16px 18px; margin-bottom: 12px;
+           background: #fff; border: 1px solid #e3e8ee; border-radius: 12px; text-decoration: none;
+           color: inherit; font-size: 16px; font-weight: 600; }
+  a.item:hover { border-color: #2563eb; }
+  a.item .ic { font-size: 20px; }
+  a.item .sub { display: block; font-size: 12.5px; font-weight: 400; color: #5b6572; margin-top: 2px; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #12161b; color: #e8edf3; }
+    a.item { background: #1b2128; border-color: #2b333d; }
+  }
+</style>
+</head>
+<body>
+  <h1>\u09B9\u09BE\u099C\u09BF\u09B0\u09BE \u0993 \u09A8\u09CB\u099F</h1>
+  <a class="item" href="/attendance" target="_blank" rel="noopener"><span class="ic">\u{1F4CB}</span><span>\u09B9\u09BE\u099C\u09BF\u09B0\u09BE \u0995\u09BE\u0989\u09A8\u09CD\u099F\u09BE\u09B0<span class="sub">\u09B9\u09BE\u099C\u09BF\u09B0\u09BE \u09A6\u09C7\u0993\u09AF\u09BC\u09BE\u09B0 \u09AA\u09C7\u099C</span></span></a>
+  <a class="item" href="/notepad" target="_blank" rel="noopener"><span class="ic">\u{1F4DD}</span><span>\u09A8\u09CB\u099F\u09AA\u09CD\u09AF\u09BE\u09A1<span class="sub">\u09B6\u09C7\u09AF\u09BC\u09BE\u09B0\u09CD\u09A1 \u09A8\u09CB\u099F \u2014 \u09B2\u09BF\u0996\u09C1\u09A8 \u0993 \u09B8\u09C7\u09AD \u0995\u09B0\u09C1\u09A8</span></span></a>
+</body>
+</html>`
+    });
+    exports2.linksPage = linksPage;
+    var notepadPage = (initialNote) => ({
+      status: 200,
+      headers: SETTINGS_HEADERS,
+      body: `<!doctype html>
+<html lang="bn">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>\u09A8\u09CB\u099F\u09AA\u09CD\u09AF\u09BE\u09A1</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; padding: 24px 16px; font-family: "Noto Sans Bengali", "Hind Siliguri", system-ui, sans-serif;
+         background: #f6f7f9; color: #1b1f24; }
+  h1 { font-size: 20px; margin: 0 0 14px; }
+  textarea { width: 100%; min-height: 55vh; font: 15px/1.6 inherit; padding: 14px;
+             border-radius: 10px; border: 1px solid #c9d1da; background: #fff; color: inherit;
+             box-sizing: border-box; resize: vertical; }
+  .bar { display: flex; gap: 12px; align-items: center; margin-top: 12px; }
+  button { font: inherit; padding: 10px 18px; border-radius: 8px; border: 1px solid #2563eb;
+           background: #2563eb; color: #fff; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  #msg { font-size: 13px; color: #5b6572; }
+  a.back { color: #2563eb; text-decoration: none; font-size: 14px; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #12161b; color: #e8edf3; }
+    textarea { background: #1b2128; border-color: #2b333d; }
+  }
+</style>
+</head>
+<body>
+  <h1>\u09A8\u09CB\u099F\u09AA\u09CD\u09AF\u09BE\u09A1</h1>
+  <textarea id="note" spellcheck="false"></textarea>
+  <div class="bar">
+    <button id="save">\u09B8\u09C7\u09AD \u0995\u09B0\u09C1\u09A8</button>
+    <span id="msg"></span>
+    <span style="flex:1"></span>
+    <a class="back" href="/links">\u2190 \u09A4\u09BE\u09B2\u09BF\u0995\u09BE\u09AF\u09BC \u09AB\u09BF\u09B0\u09C1\u09A8</a>
+  </div>
+<script>
+    (function () {
+      var box = document.getElementById("note");
+      var msg = document.getElementById("msg");
+      var save = document.getElementById("save");
+      box.value = ${JSON.stringify(typeof initialNote === "string" ? initialNote.slice(0, SETTING_LIMITS_REF.SETTING_LIMITS.attendanceNote) : "")};
+      save.onclick = function () {
+        save.disabled = true;
+        msg.textContent = "\u09B8\u09C7\u09AD \u09B9\u099A\u09CD\u099B\u09C7\u2026";
+        fetch("/api/chat/attendance-note", {
+          method: "PUT",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ note: box.value })
+        }).then(function (r) {
+          if (r.ok) { msg.textContent = "\u09B8\u09C7\u09AD \u09B9\u09AF\u09BC\u09C7\u099B\u09C7"; setTimeout(function () { msg.textContent = ""; }, 2000); }
+          else { msg.textContent = "\u09B8\u09C7\u09AD \u09B9\u09AF\u09BC\u09A8\u09BF \u2014 \u0986\u09AC\u09BE\u09B0 \u099A\u09C7\u09B7\u09CD\u099F\u09BE \u0995\u09B0\u09C1\u09A8"; }
+        }).catch(function () { msg.textContent = "\u09B8\u09BE\u09B0\u09CD\u09AD\u09BE\u09B0\u09C7 \u09AA\u09CC\u0981\u099B\u09BE\u09A8\u09CB \u09AF\u09BE\u099A\u09CD\u099B\u09C7 \u09A8\u09BE"; })
+        .finally ? null : null;
+        save.disabled = false;
+      };
+    })();
+  </script>
+</body>
+</html>`
+    });
+    exports2.notepadPage = notepadPage;
+  }
+});
+
 // server/src/bootstrap/initData.js
 var require_initData = __commonJS({
   "server/src/bootstrap/initData.js"(exports2) {
@@ -62331,6 +62498,7 @@ var require_app = __commonJS({
     var config_1 = require_repositoryFactory();
     var permissions_1 = require_permissions();
     var attendanceService_1 = require_attendanceService();
+    var linksService_1 = require_linksService();
     var logger_1 = __importDefault(require_logger2());
     var log = (0, logger_1.default)(__filename);
     require_initData();
@@ -62403,6 +62571,52 @@ var require_app = __commonJS({
       res.status(page.status).set(page.headers).send(page.body);
     };
     app.get(["/attendance", "/attendance/"], attendanceCounter);
+    var linksPageHandler = async (req, res) => {
+      const user = req.session?.userInfo;
+      if (!user?.username) {
+        const page2 = (0, attendanceService_1.attendanceEmptyPage)("/login");
+        return res.status(page2.status).set(page2.headers).send(page2.body);
+      }
+      let setting = null;
+      try {
+        const settings = await (0, config_1.getSettingRepository)().get();
+        setting = settings[0] || null;
+      } catch (error) {
+        log.error(error);
+        return res.status(503).set("Content-Type", "text/plain; charset=utf-8").send("storage unavailable");
+      }
+      if (!setting || !(0, permissions_1.canViewAttendance)(setting, user)) {
+        const page2 = (0, attendanceService_1.attendanceDeniedPage)();
+        return res.status(page2.status).set(page2.headers).send(page2.body);
+      }
+      const page = linksService_1.linksPage();
+      res.status(page.status).set(page.headers).send(page.body);
+    };
+    exports2.__bcaLinksPageHandler = linksPageHandler;
+    var notepadHandler = async (req, res) => {
+      const user = req.session?.userInfo;
+      if (!user?.username) {
+        const page2 = (0, attendanceService_1.attendanceEmptyPage)("/login");
+        return res.status(page2.status).set(page2.headers).send(page2.body);
+      }
+      let setting = null;
+      try {
+        const settings = await (0, config_1.getSettingRepository)().get();
+        setting = settings[0] || null;
+      } catch (error) {
+        log.error(error);
+        return res.status(503).set("Content-Type", "text/plain; charset=utf-8").send("storage unavailable");
+      }
+      if (!setting || !(0, permissions_1.canViewAttendance)(setting, user)) {
+        const page2 = (0, attendanceService_1.attendanceDeniedPage)();
+        return res.status(page2.status).set(page2.headers).send(page2.body);
+      }
+      const page = linksService_1.notepadPage(setting.attendanceNote);
+      res.status(page.status).set(page.headers).send(page.body);
+    };
+    exports2.__bcaNotepadHandler = notepadHandler;
+    app.get(["/links", "/links/"], linksPageHandler);
+    app.get(["/notepad", "/notepad/"], notepadHandler);
     app.use("/auth", auth_1.default);
     app.use("/api", router_1.default);
     app.use(["/api", "/auth"], (req, res) => {
