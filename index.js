@@ -62679,7 +62679,7 @@ var require_linksService = __commonJS({
           var el = document.createElement("div");
           el.className = "tab" + (i === active ? " active" : "");
           var t = document.createElement("span"); t.className = "t"; t.textContent = titleFrom(tb.content);
-          var x = document.createElement("button"); x.className = "x"; x.type = "button"; x.textContent = "\u2715"; x.title = "\u099F\u09CD\u09AF\u09BE\u09AC \u09AC\u09A8\u09CD\u09A7 \u0995\u09B0\u09C1\u09A8";
+          var x = document.createElement("button"); x.className = "x"; x.type = "button"; x.textContent = "\u2715"; x.title = "\u099F\u09CD\u09AF\u09BE\u09AC \u09AC\u09A8\u09CD\u09A7 \u0995\u09B0\u09C1\u09A8"; x.style.touchAction = "none";
           x.onclick = function (e) { e.stopPropagation(); closeTab(i); };
           el.appendChild(t); el.appendChild(x);
           el.onclick = function () { if (Date.now() - lastDragEnd < 400) return; if (i !== active) { commitActive(); active = i; render(); focusBox(); } };
@@ -62720,6 +62720,10 @@ var require_linksService = __commonJS({
       }
       bar.addEventListener("pointerdown", function (e) {
         if (e.button !== 0) return;
+        // the \u2715 close-button is NOT a drag handle \u2014 starting a drag here (and
+        // capturing the pointer on the tab) would retarget the click to the
+        // tab element, so closeTab() never fired (user report 2026-11-07)
+        if (e.target.closest && e.target.closest(".x")) return;
         var el = e.target.closest ? e.target.closest(".tab") : null;
         if (!el || !bar.contains(el)) return;
         drag = { el: el, from: [].indexOf.call(bar.children, el), startX: e.clientX, started: false };
