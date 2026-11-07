@@ -152,7 +152,7 @@ const notepadPage = function (initialNote, tabCount) {
           var el = document.createElement("div");
           el.className = "tab" + (i === active ? " active" : "");
           var t = document.createElement("span"); t.className = "t"; t.textContent = titleFrom(tb.content);
-          var x = document.createElement("button"); x.className = "x"; x.type = "button"; x.textContent = "✕"; x.title = "ট্যাব বন্ধ করুন";
+          var x = document.createElement("button"); x.className = "x"; x.type = "button"; x.textContent = "✕"; x.title = "ট্যাব বন্ধ করুন"; x.style.touchAction = "none";
           x.onclick = function (e) { e.stopPropagation(); closeTab(i); };
           el.appendChild(t); el.appendChild(x);
           el.onclick = function () { if (Date.now() - lastDragEnd < 400) return; if (i !== active) { commitActive(); active = i; render(); focusBox(); } };
@@ -193,6 +193,10 @@ const notepadPage = function (initialNote, tabCount) {
       }
       bar.addEventListener("pointerdown", function (e) {
         if (e.button !== 0) return;
+        // the ✕ close-button is NOT a drag handle — starting a drag here (and
+        // capturing the pointer on the tab) would retarget the click to the
+        // tab element, so closeTab() never fired (user report 2026-11-07)
+        if (e.target.closest && e.target.closest(".x")) return;
         var el = e.target.closest ? e.target.closest(".tab") : null;
         if (!el || !bar.contains(el)) return;
         drag = { el: el, from: [].indexOf.call(bar.children, el), startX: e.clientX, started: false };
