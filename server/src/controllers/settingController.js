@@ -120,7 +120,8 @@ const getAttendanceNote = async (req, res) => {
         const user = req.session?.userInfo;
         if (!(0, permissions_1.canViewAttendance)(setting, user))
             return res.sendStatus(403);
-        res.status(200).json({ note: typeof setting.attendanceNote === "string" ? setting.attendanceNote : "" });
+        const state = await NoteService_1.getNoteState();
+        res.status(200).json({ note: state.text, tabs: state.tabs });
     }
     catch (error) {
         handleError(error, res);
@@ -133,14 +134,14 @@ const saveAttendanceNote = async (req, res) => {
         const user = req.session?.userInfo;
         if (!(0, permissions_1.canViewAttendance)(setting, user))
             return res.sendStatus(403);
-        const note = (0, attendanceService_1.validateAttendanceNote)(req.body?.note);
-        if (note === null)
-            return res.status(400).json({ errorMessage: "client_error.too_large_error" });
-        const repository = (0, config_1.getSettingRepository)();
-        setting.attendanceNote = note;
-        await repository.update(setting);
-        log.info(`attendance note saved (${note.length} chars)`);
-        res.status(200).json({ note });
+        // unlimited note (chunked storage) — only a runaway-payload guard remains
+        if (typeof req.body?.note !== "string")
+            return res.status(400).json({ errorMessage: "client_error.client_error" });
+        if (req.body.note.length > NoteService_1.MAX_NOTE_CHARS)
+            return res.status(413).json({ errorMessage: "client_error.too_large_error" });
+        const state = await NoteService_1.saveNoteText(req.body.note);
+        log.info(`note saved (${state.chars} chars, ${state.tabs} tabs)`);
+        res.status(200).json({ note: (await NoteService_1.getNoteState()).text, tabs: state.tabs });
     }
     catch (error) {
         handleError(error, res);
@@ -156,6 +157,7 @@ const SettingService_1 = require("../services/settingService.js");
 const htmlSanitizer_1 = require("../services/htmlSanitizer.js");
 const permissions_1 = require("../services/permissions.js");
 const attendanceService_1 = require("../services/attendanceService.js");
+const NoteService_1 = require("../services/noteService.js");
 // the message-store switch changes which repo getMessageRepository() returns
 const repositoryFactoryRef = require("../config/repositoryFactory.js");
 const log = (0, logger_1.default)(__filename);

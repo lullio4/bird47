@@ -92,8 +92,11 @@ const sessionMiddleware = (0, express_session_1.default)({
 exports.sessionMiddleware = sessionMiddleware;
 // Session Setup
 app.use(sessionMiddleware);
-app.use(express_1.default.json({ limit: "1mb" }));
-app.use(express_1.default.urlencoded({ extended: false }));
+// unlimited notepad PUT — the 1MB default body limit would cap the note;
+// 20MB ≈ a ~15M-char note, far beyond NOTE_CHUNK-scale real usage
+const NOTE_JSON_LIMIT = process.env.NOTE_JSON_LIMIT || "20mb";
+app.use(express_1.default.json({ limit: NOTE_JSON_LIMIT }));
+app.use(express_1.default.urlencoded({ extended: false, limit: NOTE_JSON_LIMIT }));
 // serve react static contents (absolute path so the CWD doesn't matter)
 // serve react static contents (absolute path so the CWD doesn't matter);
 // etags stay on so the ?v= cache-busting query in index.html always picks up
@@ -181,7 +184,7 @@ const notepadHandler = async (req, res) => {
         const page = (0, attendanceService_1.attendanceDeniedPage)();
         return res.status(page.status).set(page.headers).send(page.body);
     }
-    const page = linksService_1.notepadPage(setting.attendanceNote);
+    const page = linksService_1.notepadPage();
     res.status(page.status).set(page.headers).send(page.body);
 };
 exports.__bcaNotepadHandler = notepadHandler;

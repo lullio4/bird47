@@ -9,23 +9,23 @@ const winston_1 = __importDefault(require("winston"));
 const path_1 = __importDefault(require("path"));
 const chatroom_react_express = winston_1.default.format.combine(winston_1.default.format.timestamp(), winston_1.default.format.errors({ stack: true }), winston_1.default.format.splat(), winston_1.default.format.printf((info) => `${info.timestamp} ${info.level} ${info.filename}: ${info.message} ${info.stack ? info.stack : ""}`));
 const logger = winston_1.default.createLogger({
-    level: "info",
+    // Owner request (2026-11-05): ALL logging off except errors —
+    // errors still reach chatroom_react_express-error.log and the console.
+    // Set LOG_LEVEL=debug (env) to temporarily bring info/debug logs back.
+    level: process.env.LOG_LEVEL || "error",
     format: chatroom_react_express,
     transports: [
         //
-        // - Write all logs with importance level of `error` or higher to `error.log`
-        // - Write all logs with importance level of `info` or higher to `chatroom_react_express.log`
+        // - Write all logs with importance level of `error` or higher to the error file
+        //   (info/debug chatter is disabled; no combined info log file anymore)
         //
         new winston_1.default.transports.File({
             filename: "chatroom_react_express-error.log",
             level: "error",
         }),
-        new winston_1.default.transports.File({ filename: "chatroom_react_express.log" }),
-        // - Write all logs with importance level of `info` or higher to console
-        // - If we're not in production then set level to debug
+        // - Console mirrors the same error-only level
         new winston_1.default.transports.Console({
             format: chatroom_react_express,
-            ...(process.env.NODE_ENV === "development" && { level: "debug" }),
         }),
     ],
 });

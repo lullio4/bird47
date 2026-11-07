@@ -36,6 +36,9 @@ class QueuedGitHubGistRepository {
     isProcessing = false;
     batchInterval = 5000; // 5 seconds
     maxBatchSize = 100; // Max operations per batch
+    // Owner request (2026-11-05): progress chatter is silent by default —
+    // only console.error diagnostics remain. Set GIST_VERBOSE=1 to restore the old logs.
+    verbose = process.env.GIST_VERBOSE === "1";
     // No caching - always load fresh data from GitHub
     // Statistics
     stats = {
@@ -48,7 +51,7 @@ class QueuedGitHubGistRepository {
         this.credentials = credentials;
         this.modelName = modelName;
         this.encryptionPassword = encryptionPassword;
-        console.log(`🚀 Queued GitHub Gist Repository: ${modelName}`);
+        if (this.verbose) console.log(`🚀 Queued GitHub Gist Repository: ${modelName}`);
         // Start background batch processor
         this.startBatchProcessor();
         // No initial data loading needed - will load on-demand
@@ -62,7 +65,7 @@ class QueuedGitHubGistRepository {
                 await this.processBatch();
             }
         }, this.batchInterval);
-        console.log(`📦 Batch processor started (${this.batchInterval / 1000}s interval)`);
+        if (this.verbose) console.log(`📦 Batch processor started (${this.batchInterval / 1000}s interval)`);
     }
     /**
      * Process all queued operations in a single batch
@@ -80,7 +83,7 @@ class QueuedGitHubGistRepository {
                 this.isProcessing = false;
                 return { success: true, operationsProcessed: 0 };
             }
-            console.log(`📦 Processing batch: ${operations.length} operations`);
+            if (this.verbose) console.log(`📦 Processing batch: ${operations.length} operations`);
             // Load current data from GitHub
             let currentData = await this.loadFromGist();
             // Apply all operations in order
@@ -90,7 +93,7 @@ class QueuedGitHubGistRepository {
                 try {
                     mergedData = this.applyOperation(mergedData, operation);
                     operationsApplied++;
-                    console.log(`  ✅ Applied ${operation.type} operation (${operation.id})`);
+                    if (this.verbose) console.log(`  ✅ Applied ${operation.type} operation (${operation.id})`);
                 }
                 catch (error) {
                     console.error(`  ❌ Failed to apply operation ${operation.id}:`, error.message);
@@ -112,7 +115,7 @@ class QueuedGitHubGistRepository {
             this.stats.lastBatchTime = Date.now();
             this.stats.queueLength = this.operationQueue.length;
             const processingTime = Date.now() - startTime;
-            console.log(`✅ Batch completed: ${operationsApplied} operations in ${processingTime}ms`);
+            if (this.verbose) console.log(`✅ Batch completed: ${operationsApplied} operations in ${processingTime}ms`);
             return {
                 success: true,
                 operationsProcessed: operationsApplied,
@@ -153,7 +156,7 @@ class QueuedGitHubGistRepository {
                         result.push(operation.data);
                     }
                     else {
-                        console.log(`  ⚠️ Skipping duplicate add for ${operation.data.id} (${operation.data.id ? 'ID' : 'content'})`);
+                        if (this.verbose) console.log(`  ⚠️ Skipping duplicate add for ${operation.data.id} (${operation.data.id ? 'ID' : 'content'})`);
                     }
                 }
                 break;
@@ -209,7 +212,7 @@ class QueuedGitHubGistRepository {
         };
         this.operationQueue.push(queuedOp);
         this.stats.queueLength = this.operationQueue.length;
-        console.log(`📝 Queued ${operation.type} operation (Queue: ${this.operationQueue.length})`);
+        if (this.verbose) console.log(`📝 Queued ${operation.type} operation (Queue: ${this.operationQueue.length})`);
         // Process immediately if queue is getting large
         if (this.operationQueue.length >= this.maxBatchSize && !this.isProcessing) {
             this.processBatch().catch(console.error);
@@ -306,8 +309,10 @@ class QueuedGitHubGistRepository {
                 if (!response.ok) {
                     throw new Error(`Failed to update gist: ${response.status}`);
                 }
-                console.log(`💾 ${this.modelName} data updated in GitHub Gist: ${this.gistId}`);
-                console.log(`🔗 View at: https://gist.github.com/${this.credentials.username}/${this.gistId}`);
+                if (this.verbose) {
+                    console.log(`💾 ${this.modelName} data updated in GitHub Gist: ${this.gistId}`);
+                    console.log(`🔗 View at: https://gist.github.com/${this.credentials.username}/${this.gistId}`);
+                }
             }
             else {
                 // Create new gist
@@ -329,8 +334,10 @@ class QueuedGitHubGistRepository {
                 }
                 const gist = await response.json();
                 this.gistId = gist.id;
-                console.log(`💾 ${this.modelName} data saved to GitHub Gist: ${gist.id}`);
-                console.log(`🔗 View at: ${gist.html_url}`);
+                if (this.verbose) {
+                    console.log(`💾 ${this.modelName} data saved to GitHub Gist: ${gist.id}`);
+                    console.log(`🔗 View at: ${gist.html_url}`);
+                }
             }
             return this.gistId;
         }
@@ -408,7 +415,7 @@ class QueuedGitHubGistRepository {
     setBatchConfig(intervalMs, maxBatchSize) {
         this.batchInterval = intervalMs;
         this.maxBatchSize = maxBatchSize;
-        console.log(`📦 Batch config updated: ${intervalMs}ms interval, ${maxBatchSize} max operations`);
+        if (this.verbose) console.log(`📦 Batch config updated: ${intervalMs}ms interval, ${maxBatchSize} max operations`);
     }
     /**
      * Get GitHub API rate limit status
@@ -417,7 +424,7 @@ class QueuedGitHubGistRepository {
         try {
             const response = await this.makeGitHubRequest('https://api.github.com/rate_limit');
             const data = await response.json();
-            console.log(`📊 GitHub API Rate Limit: ${data.core.remaining}/${data.core.limit} requests remaining`);
+            if (this.verbose) console.log(`📊 GitHub API Rate Limit: ${data.core.remaining}/${data.core.limit} requests remaining`);
             return data;
         }
         catch (error) {

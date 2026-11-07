@@ -18,7 +18,11 @@ const addUser = async (newUser) => {
     newUser.username = newUser.username?.trim();
     newUser.password = newUser.password?.trim();
     const userExists = await getUserByUserName(newUser.username);
-    if (userExists && userExists.length === 1)
+    // duplicate guard: ANY existing record with this username blocks registration
+    // (the old length === 1 check let duplicates pile up when the store already
+    // had 2+, which then broke login: getUserByUserName returns N records and
+    // login requires exactly one — owner-reported "Admin not exist" bug)
+    if (userExists && userExists.length > 0)
         throw ClientError_1.ClientError.duplicateError();
     newUser.password = newUser.getPasswordHash();
     const user = await (0, config_1.getUserRepository)().add(new User_1.User(newUser));

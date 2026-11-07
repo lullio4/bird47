@@ -442,16 +442,17 @@
   let lastOverlayFetch = 0; // throttle for the overlay-open notice refetch
   async function evaluate() {
     try {
-      const res = await fetch("/api/users/me", { credentials: "same-origin" });
-      if (!res.ok) {
+      // session state comes from the shared hub (window.__bcaSession) — no own
+      // /api/users/me call (owner request: এক কল, সবাই শোনে)
+      const sess = window.__bcaSession;
+      const next = sess?.loggedIn ? sess.me : null;
+      if (!next) {
         if (loggedIn) {
           loggedIn = false; me = null; fsNoticeCache = null; shownFor = null; lastLoginAt = null;
           closeOverlay(); removeAdminCard();
         }
         return;
       }
-      const next = await res.json().catch(() => null);
-      if (!next) return;
       loggedIn = true;
       me = next;
       // a changed loginAt = a fresh login (also catches in-app logout→login
@@ -492,6 +493,28 @@
     } catch { /* transient network hiccup */ }
   }
 
-  setInterval(evaluate, 1200);
-  evaluate();
+  // session hub subscriber (owner request): no own poll — ui-fixes.js owns
+  // the single /api/users/me request; we react to state transitions and
+  // keep the 5 s overlay-open refetch for mid-session admin edits.
+  let hubState;
+  setInterval(async () => {
+    const sess = window.__bcaSession;
+    if (!sess) return;
+    await evaluate(); // hub-fed (no HTTP inside) — admin-card/scroll-guard/overlay-refetch
+    if (hubState !== undefined && hubState === sess.loggedIn) return; // no transition
+    hubState = sess.loggedIn;
+    if (sess.loggedIn) {
+      loggedIn = true;
+      me = sess.me;
+      if (fsSupported) await refetchNotice();
+      maybeShow();
+      ensureAdminCard();
+      ensureScrollGuard();
+    } else {
+      if (loggedIn) {
+        loggedIn = false; me = null; fsNoticeCache = null; shownFor = null;
+        closeOverlay(); removeAdminCard();
+      }
+    }
+  }, 1500);
 })();

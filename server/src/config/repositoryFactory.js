@@ -16,6 +16,7 @@ const DiskStorageRepositoryImpl_1 = require("../repositories/DiskStorageReposito
 const PtStorageRepositoryImpl_1 = require("../repositories/PtStorageRepositoryImpl.js");
 const MemoryGistRepository_1 = require("../repositories/MemoryGistRepository.js");
 const ShardedGistMessageRepository_1 = require("../repositories/ShardedGistMessageRepository.js");
+const ShardedNoteRepository_1 = require("../repositories/ShardedNoteRepository.js");
 const log = (0, logger_1.default)(__filename);
 // singeleton idea:
 // https://stackoverflow.com/questions/1479319/simplest-cleanest-way-to-implement-a-singleton-in-javascript
@@ -46,10 +47,12 @@ function getRepository(storageModel, storageType) {
                         break;
                     }
                     const credentials = { token: githubGist_token, username: githubGist_username };
-                    // messages grow without bound → sharded gists; User/Setting stay single-file
+                    // messages and the unlimited notepad grow without bound → sharded gists; User/Setting stay single-file
                     repository = storageModel === Storage_1.StorageModels.Message
                         ? new ShardedGistMessageRepository_1.ShardedGistMessageRepository(credentials, storageModel, encryption_password)
-                        : new MemoryGistRepository_1.MemoryGistRepository(credentials, storageModel, encryption_password);
+                        : storageModel === Storage_1.StorageModels.Note
+                            ? new ShardedNoteRepository_1.ShardedNoteRepository(credentials, storageModel, encryption_password)
+                            : new MemoryGistRepository_1.MemoryGistRepository(credentials, storageModel, encryption_password);
                     break;
                 }
                 default:

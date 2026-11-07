@@ -269,13 +269,11 @@
   }
 
   async function fetchMe() {
-    try {
-      const res = await fetch("/api/users/me", { credentials: "same-origin" });
-      if (!res.ok) return null;
-      return await res.json();
-    } catch {
-      return null;
-    }
+    // session state from the shared hub (ui-fixes.js owns the single
+    // /api/users/me poll — owner request: এক কল, সবাই শোনে)
+    const sess = window.__bcaSession;
+    if (sess?.loggedIn && sess.me) return sess.me;
+    return null;
   }
 
   // ---------- feature visibility (admin-configurable) ----------
@@ -2051,16 +2049,36 @@
     else ensureNavButtons();
     applyUsersPanelVisibility();
   }
+  // the hub (ui-fixes.js) fires "bca:session" on every logged-out→logged-in
+  // flip — the SPA login navigates without a reload, so without this the
+  // buttons stayed hidden until the next manual reload (owner report 2026-11-07)
+  window.addEventListener("bca:session", (e) => {
+    if (e.detail?.loggedIn) evaluateSession();
+    else if (loggedIn) teardown();
+  });
+  // missed-flip self-healing (owner task 2026-11-07: "make me online"-এর পরের
+  // আইকনদুটো লগইনের পরে অটো আসে না, রিফ্রেশে আসে): the flip event can be
+  // missed (tab throttled in the background during login, listener-wiring
+  // race on a slow first paint) — the 1.2 s loop cross-checks the hub:
+  // hub says logged-in but this module is still torn down → evaluate now.
+  // Cheap: no HTTP, just an object read; the .bca-overlay check keeps the
+  // forced-password modal the sole owner of the screen.
+  setInterval(() => {
+    const sess = window.__bcaSession;
+    if (sess?.loggedIn && sess.me && !loggedIn && !document.querySelector(".bca-overlay")) {
+      evaluateSession();
+    }
+  }, 1200);
   // the React app navigates without reloading, so re-check on every route
   // change, re-attach the buttons if React wiped them, follow language flips,
   // and pick up admin setting changes within ~15 seconds
   let lastUrl = location.href;
   let lastLang = curLang();
   let visibilityTick = 0;
-  setInterval(async () => {
+  setInterval(() => {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
-      evaluateSession();
+      evaluateSession(); // hub-driven (fetchMe reads __bcaSession — no HTTP)
     }
     if (curLang() !== lastLang) {
       lastLang = curLang();
@@ -2070,11 +2088,20 @@
       ensureNavButtons();
       ensureReactionPlus();
       if (++visibilityTick % 12 === 0) {
-        await refreshFeatures();
-        ensureNavButtons();
-        applyUsersPanelVisibility();
+        (async () => {
+          await refreshFeatures();
+          ensureNavButtons();
+          applyUsersPanelVisibility();
+        })();
       }
     }
   }, 1200);
-  evaluateSession();
+  // first evaluation once the hub has produced its first reading
+  const waitForHub = setInterval(() => {
+    if (window.__bcaSession) {
+      clearInterval(waitForHub);
+      evaluateSession();
+    }
+  }, 300);
+  setTimeout(() => clearInterval(waitForHub), 10000);
 })();

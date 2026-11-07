@@ -36938,23 +36938,23 @@ var require_logger2 = __commonJS({
     var path_1 = __importDefault(require("path"));
     var chatroom_react_express = winston_1.default.format.combine(winston_1.default.format.timestamp(), winston_1.default.format.errors({ stack: true }), winston_1.default.format.splat(), winston_1.default.format.printf((info) => `${info.timestamp} ${info.level} ${info.filename}: ${info.message} ${info.stack ? info.stack : ""}`));
     var logger = winston_1.default.createLogger({
-      level: "info",
+      // Owner request (2026-11-05): ALL logging off except errors —
+      // errors still reach chatroom_react_express-error.log and the console.
+      // Set LOG_LEVEL=debug (env) to temporarily bring info/debug logs back.
+      level: process.env.LOG_LEVEL || "error",
       format: chatroom_react_express,
       transports: [
         //
-        // - Write all logs with importance level of `error` or higher to `error.log`
-        // - Write all logs with importance level of `info` or higher to `chatroom_react_express.log`
+        // - Write all logs with importance level of `error` or higher to the error file
+        //   (info/debug chatter is disabled; no combined info log file anymore)
         //
         new winston_1.default.transports.File({
           filename: "chatroom_react_express-error.log",
           level: "error"
         }),
-        new winston_1.default.transports.File({ filename: "chatroom_react_express.log" }),
-        // - Write all logs with importance level of `info` or higher to console
-        // - If we're not in production then set level to debug
+        // - Console mirrors the same error-only level
         new winston_1.default.transports.Console({
-          format: chatroom_react_express,
-          ...process.env.NODE_ENV === "development" && { level: "debug" }
+          format: chatroom_react_express
         })
       ]
     });
@@ -38961,6 +38961,7 @@ var require_storageTypes = __commonJS({
       StorageModels2["User"] = "User";
       StorageModels2["Setting"] = "Setting";
       StorageModels2["Message"] = "Message";
+      StorageModels2["Note"] = "Note";
     })(StorageModels || (exports2.StorageModels = StorageModels = {}));
     var StorageTypes;
     (function(StorageTypes2) {
@@ -46317,6 +46318,164 @@ var require_ShardedGistMessageRepository = __commonJS({
   }
 });
 
+// server/src/repositories/ShardedNoteRepository.js
+var require_ShardedNoteRepository = __commonJS({
+  "server/src/repositories/ShardedNoteRepository.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.ShardedNoteRepository = void 0;
+    var logger_1 = require_logger2();
+    var BaseGistRepository_1 = require_BaseGistRepository();
+    var log = (0, logger_1.default)(__filename);
+    var { APP_NAMESPACE } = BaseGistRepository_1;
+    var SHARD_LIMIT = Math.max(parseInt(process.env.GIST_SHARD_BYTES || "500000", 10), 1e3);
+    var ShardedNoteRepository = class extends BaseGistRepository_1.BaseGistRepository {
+      /** [{ index, gistId, minId, maxId, sizeBytes }] sorted by index */
+      shards = [];
+      dirty = /* @__PURE__ */ new Set();
+      get descriptionPrefix() {
+        return `${APP_NAMESPACE}Storage_${this.modelName}_`;
+      }
+      description(index) {
+        return `${APP_NAMESPACE}Storage_${this.modelName}_${index}`;
+      }
+      filename(index) {
+        return `${this.modelName.toLowerCase()}-data-${index}.json`;
+      }
+      // ---------- load ----------
+      async loadOnce() {
+        log.info(`loading ${this.modelName} from sharded gists...`);
+        const gists = await this.listGists();
+        const shardRe = new RegExp(`^${this.descriptionPrefix}(\\d+)$`);
+        const mine = gists.map((g) => {
+          const m = g.description && shardRe.exec(g.description);
+          return m ? { index: Number(m[1]), gistId: g.id } : null;
+        }).filter(Boolean).sort((a, b) => a.index - b.index);
+        const items = [];
+        const shards = [];
+        for (const shard of mine) {
+          const content = await this.readGistFile(shard.gistId, this.filename(shard.index));
+          if (content == null) {
+            log.warn(`shard ${shard.index} has no file, skipping`);
+            continue;
+          }
+          const parsed = JSON.parse(this.decrypt(content));
+          const arr = Array.isArray(parsed) ? parsed : parsed[this.modelName];
+          if (!Array.isArray(arr))
+            throw new Error(`unexpected payload in shard ${shard.index}`);
+          const ids = arr.map((x) => Number(x.id) || 0);
+          items.push(...arr);
+          shards.push({
+            index: shard.index,
+            gistId: shard.gistId,
+            minId: ids.length ? Math.min(...ids) : 0,
+            maxId: ids.length ? Math.max(...ids) : 0,
+            sizeBytes: JSON.stringify({ [this.modelName]: arr }).length
+          });
+        }
+        const byId = /* @__PURE__ */ new Map();
+        for (const it of items) {
+          if (it && typeof it === "object" && it.id != null)
+            byId.set(Number(it.id), it);
+        }
+        this.items = [...byId.values()].sort((a, b) => a.id - b.id);
+        this.shards = shards;
+        this.maxId = this.items.reduce((mx, it) => Math.max(mx, Number(it.id) || 0), this.maxId);
+        log.info(`${this.modelName} loaded: ${this.items.length} chunk(s) across ${this.shards.length} shard(s)`);
+      }
+      // ---------- shard helpers ----------
+      shardForId(id) {
+        for (let i = this.shards.length - 1; i >= 0; i--) {
+          const s = this.shards[i];
+          if (id >= s.minId && id <= s.maxId)
+            return s;
+        }
+        return this.shards[this.shards.length - 1] || null;
+      }
+      lastShard() {
+        return this.shards[this.shards.length - 1] || null;
+      }
+      itemsInShard(shard) {
+        return this.items.filter((it) => it.id >= shard.minId && it.id <= shard.maxId);
+      }
+      nextIndex() {
+        return this.shards.length ? this.shards[this.shards.length - 1].index + 1 : 1;
+      }
+      // ---------- hooks ----------
+      afterAdd(item) {
+        const itemSize = JSON.stringify({ [this.modelName]: [item] }).length;
+        let shard = this.lastShard();
+        if (!shard || shard.sizeBytes + itemSize > SHARD_LIMIT) {
+          shard = { index: this.nextIndex(), gistId: null, minId: item.id, maxId: item.id, sizeBytes: 0 };
+          this.shards.push(shard);
+        }
+        shard.maxId = Math.max(shard.maxId, item.id);
+        shard.sizeBytes += itemSize;
+        this.dirty.add(shard.index);
+      }
+      afterUpdate(item) {
+        const shard = this.shardForId(item.id);
+        if (shard)
+          this.dirty.add(shard.index);
+      }
+      afterRemove(id) {
+        const shard = this.shardForId(id);
+        if (shard)
+          this.dirty.add(shard.index);
+      }
+      afterRemoveAll() {
+        for (const shard of this.shards)
+          this.deleteGist(shard.gistId).catch((err) => log.error(`deleting shard gist ${shard.gistId} failed: ${err.message}`));
+        this.shards = [];
+        this.dirty.clear();
+      }
+      // ---------- flush ----------
+      async flush() {
+        if (!this.dirty.size || this.flushBusy)
+          return;
+        this.flushBusy = true;
+        try {
+          while (this.dirty.size) {
+            const index = this.dirty.values().next().value;
+            this.dirty.delete(index);
+            const shard = this.shards.find((s) => s.index === index);
+            if (!shard)
+              continue;
+            const arr = this.itemsInShard(shard);
+            if (!arr.length) {
+              if (shard.gistId && this.shards.length > 1) {
+                await this.deleteGist(shard.gistId);
+                this.shards = this.shards.filter((s) => s.index !== index);
+                log.info(`empty shard ${index} deleted`);
+              }
+              continue;
+            }
+            const json = JSON.stringify({ [this.modelName]: arr });
+            if (json.length > 9e5) {
+              log.error(`shard ${index} payload is ${json.length} bytes \u2014 too large for a gist file; skipping write (lower NOTE_CHUNK_CHARS)`);
+              continue;
+            }
+            shard.sizeBytes = json.length;
+            const encrypted = this.encrypt(json);
+            if (shard.gistId) {
+              await this.updateGist(shard.gistId, this.filename(index), encrypted);
+            } else {
+              shard.gistId = await this.createGist(this.description(index), this.filename(index), encrypted);
+              log.info(`created shard ${index} gist ${shard.gistId}`);
+            }
+          }
+        } catch (err) {
+          log.error(`note flush failed (will retry): ${err.message}`);
+          this.scheduleFlush();
+        } finally {
+          this.flushBusy = false;
+        }
+      }
+    };
+    exports2.ShardedNoteRepository = ShardedNoteRepository;
+  }
+});
+
 // server/src/config/repositoryFactory.js
 var require_repositoryFactory = __commonJS({
   "server/src/config/repositoryFactory.js"(exports2) {
@@ -46337,6 +46496,7 @@ var require_repositoryFactory = __commonJS({
     var PtStorageRepositoryImpl_1 = require_PtStorageRepositoryImpl();
     var MemoryGistRepository_1 = require_MemoryGistRepository();
     var ShardedGistMessageRepository_1 = require_ShardedGistMessageRepository();
+    var ShardedNoteRepository_1 = require_ShardedNoteRepository();
     var log = (0, logger_1.default)(__filename);
     function getRepository(storageModel, storageType) {
       let repository = null;
@@ -46365,7 +46525,7 @@ var require_repositoryFactory = __commonJS({
                 break;
               }
               const credentials = { token: githubGist_token, username: githubGist_username };
-              repository = storageModel === Storage_1.StorageModels.Message ? new ShardedGistMessageRepository_1.ShardedGistMessageRepository(credentials, storageModel, encryption_password) : new MemoryGistRepository_1.MemoryGistRepository(credentials, storageModel, encryption_password);
+              repository = storageModel === Storage_1.StorageModels.Message ? new ShardedGistMessageRepository_1.ShardedGistMessageRepository(credentials, storageModel, encryption_password) : storageModel === Storage_1.StorageModels.Note ? new ShardedNoteRepository_1.ShardedNoteRepository(credentials, storageModel, encryption_password) : new MemoryGistRepository_1.MemoryGistRepository(credentials, storageModel, encryption_password);
               break;
             }
             default:
@@ -46551,7 +46711,7 @@ var require_userCrudService = __commonJS({
       newUser.username = newUser.username?.trim();
       newUser.password = newUser.password?.trim();
       const userExists = await getUserByUserName(newUser.username);
-      if (userExists && userExists.length === 1)
+      if (userExists && userExists.length > 0)
         throw ClientError_1.ClientError.duplicateError();
       newUser.password = newUser.getPasswordHash();
       const user = await (0, config_1.getUserRepository)().add(new User_1.User(newUser));
@@ -46739,21 +46899,26 @@ var require_authService = __commonJS({
         throw ClientError_1.ClientError.invalidCredentials();
       log.debug("login called");
       const result = await userCrudService.getUserByUserName(user.username);
-      if (!result || result.length != 1)
+      if (!result || result.length === 0)
         throw ClientError_1.ClientError.notExistsError();
-      if (!result[0].active) {
+      if (result.length > 1) {
+        result.sort((a, b) => (a.id || 0) - (b.id || 0));
+        log.warn(`login: ${result.length} records found for ${user.username} \u2014 using the newest (id ${result[result.length - 1].id})`);
+      }
+      const record = result[result.length - 1];
+      if (!record.active) {
         log.debug("login failed, User Inactive");
         throw ClientError_1.ClientError.inactiveUser();
       }
-      const compare = await comparePass(user.password, result[0].password);
+      const compare = await comparePass(user.password, record.password);
       if (!compare)
         throw ClientError_1.ClientError.WrongPassword();
       const userDto = new UserDto_1.UserDto(
-        result[0]
+        record
         // returns user model
       );
-      result[0].lastLoginDate = (/* @__PURE__ */ new Date()).toISOString();
-      await (0, config_1.getUserRepository)().update(result[0]);
+      record.lastLoginDate = (/* @__PURE__ */ new Date()).toISOString();
+      await (0, config_1.getUserRepository)().update(record);
       return userDto;
     };
     exports2.login = login;
@@ -58933,6 +59098,9 @@ var require_htmlSanitizer = __commonJS({
     var MAX_NOTICE_CHARS = parseInt(process.env.MAX_NOTICE_CHARS || "20000", 10);
     exports2.MAX_NOTICE_CHARS = MAX_NOTICE_CHARS;
     var baseOptions = {
+      // `style` in allowedTags is the owner-approved HTML+CSS feature (রি-২) —
+      // the library's per-call XSS nag is silenced; sanitization behavior is unchanged.
+      allowVulnerableTags: true,
       allowedTags: [
         ...sanitize_html_1.default.defaults.allowedTags,
         "img",
@@ -59606,6 +59774,121 @@ var require_attendanceService = __commonJS({
   }
 });
 
+// server/src/services/noteStore.js
+var require_noteStore = __commonJS({
+  "server/src/services/noteStore.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.NOTE_CHUNK_CHARS = void 0;
+    exports2.readNote = readNote;
+    exports2.writeNote = writeNote;
+    var logger_1 = require_logger2();
+    var Storage_1 = require_storageTypes();
+    var ShardedNoteRepository_1 = require_ShardedNoteRepository();
+    var DiskStorageRepositoryImpl_1 = require_DiskStorageRepositoryImpl();
+    var log = (0, logger_1.default)(__filename);
+    var NOTE_CHUNK_CHARS = Math.max(parseInt(process.env.NOTE_CHUNK_CHARS || "400000", 10), 1e4);
+    exports2.NOTE_CHUNK_CHARS = NOTE_CHUNK_CHARS;
+    var noteRepository = null;
+    function getNoteRepository() {
+      if (!noteRepository) {
+        const defaultStorage = process.env.REPOSITORY_NAME || Storage_1.StorageTypes.diskStorage;
+        const storageType = defaultStorage === Storage_1.StorageTypes.githubGistStorage ? Storage_1.StorageTypes.githubGistStorage : Storage_1.StorageTypes.diskStorage;
+        if (storageType === Storage_1.StorageTypes.githubGistStorage) {
+          const token = process.env.githubGist_token ?? "";
+          const username = process.env.githubGist_username ?? "";
+          if (!token || !username) {
+            log.error("githubGist env vars are required for githubGistStorage (Note)");
+            throw new Error("gist credentials missing for Note storage");
+          }
+          noteRepository = new ShardedNoteRepository_1.ShardedNoteRepository(
+            { token, username },
+            Storage_1.StorageModels.Note,
+            process.env.encryption_password ?? ""
+          );
+        } else {
+          noteRepository = new DiskStorageRepositoryImpl_1.DiskStorageRepositoryImpl(Storage_1.StorageModels.Note);
+        }
+      }
+      return noteRepository;
+    }
+    async function readNote() {
+      const repo = getNoteRepository();
+      const items = await repo.get();
+      return items.slice().sort((a, b) => a.id - b.id).map((it) => typeof it.chunk === "string" ? it.chunk : "").join("");
+    }
+    async function writeNote(text) {
+      const safe = typeof text === "string" ? text : "";
+      const chunks = [];
+      for (let i = 0; i < safe.length; i += NOTE_CHUNK_CHARS) {
+        chunks.push(safe.slice(i, i + NOTE_CHUNK_CHARS));
+      }
+      const repo = getNoteRepository();
+      const existing = (await repo.get()).slice().sort((a, b) => a.id - b.id);
+      let changed = 0;
+      const keep = Math.min(existing.length, chunks.length);
+      for (let i = 0; i < keep; i++) {
+        if (existing[i].chunk !== chunks[i]) {
+          existing[i].chunk = chunks[i];
+          await repo.update(existing[i]);
+          changed++;
+        }
+      }
+      if (chunks.length > existing.length) {
+        for (let i = keep; i < chunks.length; i++) {
+          await repo.add({ chunk: chunks[i] });
+          changed++;
+        }
+      } else if (existing.length > chunks.length) {
+        for (let i = keep; i < existing.length; i++) {
+          await repo.remove(existing[i].id);
+          changed++;
+        }
+      }
+      if (changed)
+        log.info(`note saved: ${safe.length} chars in ${chunks.length} chunk(s) (${changed} chunk write(s))`);
+      return { chars: safe.length, chunks: chunks.length };
+    }
+  }
+});
+
+// server/src/services/noteService.js
+var require_noteService = __commonJS({
+  "server/src/services/noteService.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.SEPARATOR = void 0;
+    exports2.splitNoteTabs = splitNoteTabs;
+    exports2.joinNoteTabs = joinNoteTabs;
+    exports2.getNoteState = getNoteState;
+    exports2.saveNoteText = saveNoteText;
+    var NoteService_1 = require_noteService();
+    var noteStore_1 = require_noteStore();
+    var CryptoJS = require_crypto_js();
+    var SEPARATOR = CryptoJS.SHA512("-- tab separator --").toString();
+    exports2.SEPARATOR = SEPARATOR;
+    var MAX_NOTE_CHARS = Math.max(parseInt(process.env.MAX_NOTE_CHARS || "10000000", 10), 1e5);
+    exports2.MAX_NOTE_CHARS = MAX_NOTE_CHARS;
+    function splitNoteTabs(text) {
+      return typeof text === "string" && text ? text.split(SEPARATOR) : [""];
+    }
+    function joinNoteTabs(parts) {
+      const safe = Array.isArray(parts) ? parts.filter((p) => typeof p === "string") : [];
+      const clean = safe.length ? safe : [""];
+      return clean.some((p) => p !== "") ? clean.join(SEPARATOR) : "";
+    }
+    async function getNoteState() {
+      const text = await noteStore_1.readNote();
+      return { text, tabs: splitNoteTabs(text).length };
+    }
+    async function saveNoteText(text) {
+      const joined = joinNoteTabs(splitNoteTabs(typeof text === "string" ? text : ""));
+      const res = await noteStore_1.writeNote(joined);
+      return { chars: res.chars, tabs: splitNoteTabs(joined).length };
+    }
+  }
+});
+
 // server/src/controllers/settingController.js
 var require_settingController = __commonJS({
   "server/src/controllers/settingController.js"(exports2) {
@@ -59707,7 +59990,8 @@ var require_settingController = __commonJS({
         const user = req.session?.userInfo;
         if (!(0, permissions_1.canViewAttendance)(setting, user))
           return res.sendStatus(403);
-        res.status(200).json({ note: typeof setting.attendanceNote === "string" ? setting.attendanceNote : "" });
+        const state = await NoteService_1.getNoteState();
+        res.status(200).json({ note: state.text, tabs: state.tabs });
       } catch (error) {
         handleError(error, res);
       }
@@ -59719,14 +60003,13 @@ var require_settingController = __commonJS({
         const user = req.session?.userInfo;
         if (!(0, permissions_1.canViewAttendance)(setting, user))
           return res.sendStatus(403);
-        const note = (0, attendanceService_1.validateAttendanceNote)(req.body?.note);
-        if (note === null)
-          return res.status(400).json({ errorMessage: "client_error.too_large_error" });
-        const repository = (0, config_1.getSettingRepository)();
-        setting.attendanceNote = note;
-        await repository.update(setting);
-        log.info(`attendance note saved (${note.length} chars)`);
-        res.status(200).json({ note });
+        if (typeof req.body?.note !== "string")
+          return res.status(400).json({ errorMessage: "client_error.client_error" });
+        if (req.body.note.length > NoteService_1.MAX_NOTE_CHARS)
+          return res.status(413).json({ errorMessage: "client_error.too_large_error" });
+        const state = await NoteService_1.saveNoteText(req.body.note);
+        log.info(`note saved (${state.chars} chars, ${state.tabs} tabs)`);
+        res.status(200).json({ note: (await NoteService_1.getNoteState()).text, tabs: state.tabs });
       } catch (error) {
         handleError(error, res);
       }
@@ -59741,6 +60024,7 @@ var require_settingController = __commonJS({
     var htmlSanitizer_1 = require_htmlSanitizer();
     var permissions_1 = require_permissions();
     var attendanceService_1 = require_attendanceService();
+    var NoteService_1 = require_noteService();
     var repositoryFactoryRef = require_repositoryFactory();
     var log = (0, logger_1.default)(__filename);
     async function getSetting() {
@@ -62260,9 +62544,9 @@ var require_memorystore2 = __commonJS({
 var require_linksService = __commonJS({
   "server/src/services/linksService.js"(exports2) {
     "use strict";
-    Object.defineProperty(exports2, "__esModule", { value: true });
-    exports2.validateNotePut = exports2.notepadPage = exports2.linksPage = exports2.SETTINGS_HEADERS = void 0;
     var SETTING_LIMITS_REF = require_Setting();
+    var NoteService_1 = require_noteService();
+    var { SEPARATOR } = NoteService_1;
     var SETTINGS_HEADERS = {
       "Content-Type": "text/html; charset=utf-8",
       "X-Content-Type-Options": "nosniff",
@@ -62270,12 +62554,13 @@ var require_linksService = __commonJS({
       "X-Frame-Options": "SAMEORIGIN"
     };
     exports2.SETTINGS_HEADERS = SETTINGS_HEADERS;
-    var validateNotePut = (value) => {
-      if (typeof value !== "string") return "";
-      if (value.length > SETTING_LIMITS_REF.SETTING_LIMITS.attendanceNote) return null;
-      return value;
-    };
-    exports2.validateNotePut = validateNotePut;
+    var deniedBody = () => `<!doctype html>
+<html lang="bn"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>\u09AA\u09CD\u09B0\u09AC\u09C7\u09B6\u09BE\u09A7\u09BF\u0995\u09BE\u09B0 \u09A8\u09C7\u0987</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;font-family:"Noto Sans Bengali",system-ui,sans-serif;background:#f6f7f9;color:#1b1f24;padding:24px;text-align:center}h1{font-size:18px;margin:0 0 6px}p{margin:0;color:#5b6572;font-size:14px}@media (prefers-color-scheme: dark){body{background:#12161b;color:#e8edf3}p{color:#9aa5b1}}</style>
+</head><body><div><h1>\u09AA\u09CD\u09B0\u09AC\u09C7\u09B6\u09BE\u09A7\u09BF\u0995\u09BE\u09B0 \u09A8\u09C7\u0987</h1><p>\u098F\u0987 \u09AA\u09C7\u099C\u099F\u09BE \u09B6\u09C1\u09A7\u09C1 \u0985\u09A8\u09C1\u09AE\u09A4\u09BF-\u09AA\u09CD\u09B0\u09BE\u09AA\u09CD\u09A4 \u0987\u0989\u099C\u09BE\u09B0\u09C7\u09B0 \u099C\u09A8\u09CD\u09AF\u0964</p></div></body></html>`;
+    exports2.deniedBody = deniedBody;
     var linksPage = () => ({
       status: 200,
       headers: SETTINGS_HEADERS,
@@ -62292,7 +62577,7 @@ var require_linksService = __commonJS({
   h1 { font-size: 20px; margin: 0 0 18px; }
   a.item { display: flex; align-items: center; gap: 10px; padding: 16px 18px; margin-bottom: 12px;
            background: #fff; border: 1px solid #e3e8ee; border-radius: 12px; text-decoration: none;
-           color: inherit; font-size: 16px; font-weight: 600; }
+           color: inherit; font-size: 16px; weight: 600; }
   a.item:hover { border-color: #2563eb; }
   a.item .ic { font-size: 20px; }
   a.item .sub { display: block; font-size: 12.5px; font-weight: 400; color: #5b6572; margin-top: 2px; }
@@ -62305,15 +62590,19 @@ var require_linksService = __commonJS({
 <body>
   <h1>\u09B9\u09BE\u099C\u09BF\u09B0\u09BE \u0993 \u09A8\u09CB\u099F</h1>
   <a class="item" href="/attendance" target="_blank" rel="noopener"><span class="ic">\u{1F4CB}</span><span>\u09B9\u09BE\u099C\u09BF\u09B0\u09BE \u0995\u09BE\u0989\u09A8\u09CD\u099F\u09BE\u09B0<span class="sub">\u09B9\u09BE\u099C\u09BF\u09B0\u09BE \u09A6\u09C7\u0993\u09AF\u09BC\u09BE\u09B0 \u09AA\u09C7\u099C</span></span></a>
-  <a class="item" href="/notepad" target="_blank" rel="noopener"><span class="ic">\u{1F4DD}</span><span>\u09A8\u09CB\u099F\u09AA\u09CD\u09AF\u09BE\u09A1<span class="sub">\u09B6\u09C7\u09AF\u09BC\u09BE\u09B0\u09CD\u09A1 \u09A8\u09CB\u099F \u2014 \u09B2\u09BF\u0996\u09C1\u09A8 \u0993 \u09B8\u09C7\u09AD \u0995\u09B0\u09C1\u09A8</span></span></a>
+  <a class="item" href="/notepad" target="_blank" rel="noopener"><span class="ic">\u{1F4DD}</span><span>\u09A8\u09CB\u099F\u09AA\u09CD\u09AF\u09BE\u09A1<span class="sub">\u09B6\u09C7\u09AF\u09BC\u09BE\u09B0\u09CD\u09A1 \u09A8\u09CB\u099F \u2014 \u099F\u09CD\u09AF\u09BE\u09AC\u09B8\u09B9, \u0986\u09A8\u09B2\u09BF\u09AE\u09BF\u099F\u09C7\u09A1</span></span></a>
 </body>
 </html>`
     });
     exports2.linksPage = linksPage;
-    var notepadPage = (initialNote) => ({
-      status: 200,
-      headers: SETTINGS_HEADERS,
-      body: `<!doctype html>
+    var notepadPage = function(initialNote, tabCount) {
+      const _legacy = typeof initialNote === "string" ? initialNote : "";
+      const _tabs = Math.max(typeof tabCount === "number" ? tabCount : 1, 1);
+      const SEPARATOR_JSON = JSON.stringify(NoteService_1.SEPARATOR);
+      return {
+        status: 200,
+        headers: SETTINGS_HEADERS,
+        body: `<!doctype html>
 <html lang="bn">
 <head>
 <meta charset="utf-8" />
@@ -62321,59 +62610,230 @@ var require_linksService = __commonJS({
 <title>\u09A8\u09CB\u099F\u09AA\u09CD\u09AF\u09BE\u09A1</title>
 <style>
   :root { color-scheme: light dark; }
-  body { margin: 0; padding: 24px 16px; font-family: "Noto Sans Bengali", "Hind Siliguri", system-ui, sans-serif;
+  body { margin: 0; padding: 20px 16px 28px; font-family: "Noto Sans Bengali", "Hind Siliguri", system-ui, sans-serif;
          background: #f6f7f9; color: #1b1f24; }
-  h1 { font-size: 20px; margin: 0 0 14px; }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .tab { display: inline-flex; align-items: center; gap: 8px; max-width: 240px; padding: 7px 12px;
+         font: inherit; font-size: 13.5px; border: 1px solid #c9d1da; border-radius: 8px 8px 0 0;
+         background: #eceff3; color: inherit; cursor: pointer; touch-action: none; user-select: none; -webkit-user-select: none; }
+  .tab.dragging { opacity: .55; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+  .tab.drop-before { box-shadow: -3px 0 0 0 #2563eb; }
+  .tab.drop-after { box-shadow: 3px 0 0 0 #2563eb; }
+  .tab.active { background: #fff; border-color: #2563eb; border-bottom-color: #fff; font-weight: 600; }
+  .tab .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tab .x { border: 0; background: none; color: #5b6572; cursor: pointer; font-size: 14px; padding: 0 2px; line-height: 1; }
+  .tab .x:hover { color: #c62828; }
+  #addtab { padding: 7px 14px; font: inherit; font-size: 14px; border: 1px dashed #9aa5b1; border-radius: 8px;
+            background: none; color: inherit; cursor: pointer; }
+  #addtab:hover { border-color: #2563eb; color: #2563eb; }
   textarea { width: 100%; min-height: 55vh; font: 15px/1.6 inherit; padding: 14px;
              border-radius: 10px; border: 1px solid #c9d1da; background: #fff; color: inherit;
-             box-sizing: border-box; resize: vertical; }
-  .bar { display: flex; gap: 12px; align-items: center; margin-top: 12px; }
-  button { font: inherit; padding: 10px 18px; border-radius: 8px; border: 1px solid #2563eb;
+             box-sizing: border-box; resize: vertical; white-space: pre; }
+  .bar { display: flex; gap: 12px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+  button.save { font: inherit; padding: 10px 18px; border-radius: 8px; border: 1px solid #2563eb;
            background: #2563eb; color: #fff; cursor: pointer; }
-  button:disabled { opacity: .6; cursor: default; }
+  button.save:disabled { opacity: .6; cursor: default; }
   #msg { font-size: 13px; color: #5b6572; }
+  #chars { font-size: 12.5px; color: #5b6572; }
   a.back { color: #2563eb; text-decoration: none; font-size: 14px; }
   @media (prefers-color-scheme: dark) {
     body { background: #12161b; color: #e8edf3; }
     textarea { background: #1b2128; border-color: #2b333d; }
+    .tab { background: #1b2128; border-color: #2b333d; }
+    .tab.active { background: #232b34; border-color: #2563eb; }
   }
 </style>
 </head>
 <body>
   <h1>\u09A8\u09CB\u099F\u09AA\u09CD\u09AF\u09BE\u09A1</h1>
+  <div class="tabs" id="tabsbar"></div>
   <textarea id="note" spellcheck="false"></textarea>
   <div class="bar">
-    <button id="save">\u09B8\u09C7\u09AD \u0995\u09B0\u09C1\u09A8</button>
+    <button class="save" id="save">\u09B8\u09C7\u09AD \u0995\u09B0\u09C1\u09A8</button>
     <span id="msg"></span>
+    <span id="chars"></span>
     <span style="flex:1"></span>
     <a class="back" href="/links">\u2190 \u09A4\u09BE\u09B2\u09BF\u0995\u09BE\u09AF\u09BC \u09AB\u09BF\u09B0\u09C1\u09A8</a>
   </div>
 <script>
     (function () {
+      var SEP = ${SEPARATOR_JSON};
       var box = document.getElementById("note");
+      var bar = document.getElementById("tabsbar");
       var msg = document.getElementById("msg");
+      var chars = document.getElementById("chars");
       var save = document.getElementById("save");
-      box.value = ${JSON.stringify(typeof initialNote === "string" ? initialNote.slice(0, SETTING_LIMITS_REF.SETTING_LIMITS.attendanceNote) : "")};
-      save.onclick = function () {
+      var tabs = [];                      // [{content}] \u2014 protectedtext \u09AE\u09A1\u09C7\u09B2; \u09B8\u09BE\u09B0\u09CD\u09AD \u0995\u09B0\u09BE\u09B0 \u09B8\u09AE\u09AF\u09BC \u09AD\u09B0\u09BE \u09B9\u09AF\u09BC
+      var active = 0;
+      var savedText = "";                 // \u09B8\u09BE\u09B0\u09CD\u09AD\u09BE\u09B0\u09C7 \u09A5\u09BE\u0995\u09BE \u099C\u09CB\u09A1\u09BC\u09BE-\u099F\u09C7\u0995\u09CD\u09B8\u099F; \u09B2\u09CB\u09A1-\u09AB\u09C7\u099A \u09B8\u09AB\u09B2 \u09B9\u09B2\u09C7 \u09B8\u09C7\u099F \u09B9\u09AF\u09BC
+      function titleFrom(c) {
+        var t = (c || "").replace(/\\r/g, "");
+        var nl = t.indexOf("\\n");
+        var line = (nl === -1 ? t : t.slice(0, nl)).trim();
+        return line ? line.slice(0, 40) : "\u09AB\u09BE\u0981\u0995\u09BE \u099F\u09CD\u09AF\u09BE\u09AC";
+      }
+      function render() {
+        bar.innerHTML = "";
+        tabs.forEach(function (tb, i) {
+          var el = document.createElement("div");
+          el.className = "tab" + (i === active ? " active" : "");
+          var t = document.createElement("span"); t.className = "t"; t.textContent = titleFrom(tb.content);
+          var x = document.createElement("button"); x.className = "x"; x.type = "button"; x.textContent = "\u2715"; x.title = "\u099F\u09CD\u09AF\u09BE\u09AC \u09AC\u09A8\u09CD\u09A7 \u0995\u09B0\u09C1\u09A8";
+          x.onclick = function (e) { e.stopPropagation(); closeTab(i); };
+          el.appendChild(t); el.appendChild(x);
+          el.onclick = function () { if (Date.now() - lastDragEnd < 400) return; if (i !== active) { commitActive(); active = i; render(); focusBox(); } };
+          bar.appendChild(el);
+        });
+        var add = document.createElement("button");
+        add.id = "addtab"; add.type = "button"; add.textContent = "+ \u09A8\u09A4\u09C1\u09A8 \u099F\u09CD\u09AF\u09BE\u09AC";
+        add.onclick = addTab;
+        bar.appendChild(add);
+        box.value = tabs[active] ? tabs[active].content : "";
+        updateChars();
+      }
+      function commitActive() {
+        if (tabs[active]) tabs[active].content = box.value;
+        if (tabs[active]) tabs[active].title = titleFrom(tabs[active].content);
+      }
+      function addTab() { commitActive(); tabs.push({ title: "\u09AB\u09BE\u0981\u0995\u09BE \u099F\u09CD\u09AF\u09BE\u09AC", content: "" }); active = tabs.length - 1; render(); focusBox(); }
+      // ---- tab re-ordering (swap by drag) \u2014 protectedtext.com-style (MIT):
+      // their jQuery-UI sortable uses {distance:5, tolerance:"pointer"}; this is
+      // the pointer-events twin: press \u2192 move \u22655px = drag (else click), drop
+      // inserts the dragged tab at the hovered tab's edge. Mobile touch works
+      // via pointer events; reordering marks the note modified (unsaved warning).
+      var drag = null; // {from, startX, started}
+      var lastDragEnd = 0; // a real drag must not end as an accidental tab-switch click
+      function clearDropMarks() {
+        for (var i = 0; i < bar.children.length; i++) {
+          var ch = bar.children[i];
+          if (ch.classList) ch.classList.remove("drop-before", "drop-after");
+        }
+      }
+      function dragTargetFromPoint(x, y) {
+        var els = document.elementsFromPoint ? document.elementsFromPoint(x, y) : [];
+        for (var i = 0; i < els.length; i++) {
+          var el = els[i];
+          if (el && el.classList && el.classList.contains("tab") && bar.contains(el)) return el;
+        }
+        return null;
+      }
+      bar.addEventListener("pointerdown", function (e) {
+        if (e.button !== 0) return;
+        var el = e.target.closest ? e.target.closest(".tab") : null;
+        if (!el || !bar.contains(el)) return;
+        drag = { el: el, from: [].indexOf.call(bar.children, el), startX: e.clientX, started: false };
+        try { el.setPointerCapture(e.pointerId); } catch (err) { /* older engines */ }
+      });
+      bar.addEventListener("pointermove", function (e) {
+        if (!drag) return;
+        if (!drag.started) {
+          if (Math.abs(e.clientX - drag.startX) < 5) return;
+          drag.started = true;
+          drag.el.classList.add("dragging");
+        }
+        e.preventDefault();
+        clearDropMarks();
+        var over = dragTargetFromPoint(e.clientX, e.clientY);
+        if (over && over !== drag.el) {
+          var r = over.getBoundingClientRect();
+          over.classList.add(e.clientX < r.left + r.width / 2 ? "drop-before" : "drop-after");
+        }
+      }, { passive: false });
+      bar.addEventListener("pointerup", function (e) {
+        if (!drag) return;
+        var d = drag; drag = null;
+        try { d.el.releasePointerCapture(e.pointerId); } catch (err) { /* noop */ }
+        if (!d.started) return; // plain click \u2014 tab switch handler runs as usual
+        d.el.classList.remove("dragging");
+        clearDropMarks();
+        var over = dragTargetFromPoint(e.clientX, e.clientY);
+        if (!over || over === d.el) return;
+        var to = [].indexOf.call(bar.children, over);
+        var r = over.getBoundingClientRect();
+        var after = e.clientX > r.left + r.width / 2;
+        // sortable arithmetic: DOM index \u2192 post-removal insert index
+        if (d.from < to) { if (!after) to -= 1; }
+        else if (after) to += 1;
+        if (d.from === to) return;
+        commitActive();
+        var moved = tabs.splice(d.from, 1)[0];
+        tabs.splice(to, 0, moved);
+        if (active === d.from) active = to; else if (d.from < active && active <= to) active -= 1; else if (to <= active && active < d.from) active += 1;
+        lastDragEnd = Date.now();
+        render(); focusBox();
+      });
+      bar.addEventListener("pointercancel", function () {
+        if (!drag) return;
+        drag.el.classList.remove("dragging");
+        clearDropMarks();
+        drag = null;
+      });
+      function closeTab(i) {
+        if (tabs.length === 1) { tabs = [{ title: "\u09AB\u09BE\u0981\u0995\u09BE \u099F\u09CD\u09AF\u09BE\u09AC", content: "" }]; active = 0; render(); focusBox(); return; }
+        tabs.splice(i, 1); if (active >= tabs.length) active = tabs.length - 1; render(); focusBox();
+      }
+      function focusBox() { try { box.focus(); } catch (e) {} }
+      function updateChars() { chars.textContent = totalChars() + " \u0985\u0995\u09CD\u09B7\u09B0"; }
+      function joined() { commitActive(); return tabs.map(function (tb) { return tb.content; }).join(SEP); }
+      function totalChars() { return tabs.reduce(function (n, tb) { return n + (tb.content ? tb.content.length : 0); }, 0); }
+      box.addEventListener("input", function () {
+        if (tabs[active]) { tabs[active].content = box.value; tabs[active].title = titleFrom(box.value); }
+        updateChars();
+        var t = titleFrom(box.value);
+        var el = bar.children[active];
+        if (el && el.firstElementChild) el.firstElementChild.textContent = t;
+      });
+      // Tab key \u2192 4 spaces (protectedtext pattern)
+      box.addEventListener("keydown", function (e) {
+        if (e.key === "Tab" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+          e.preventDefault();
+          var s = box.selectionStart, en = box.selectionEnd;
+          box.value = box.value.substring(0, s) + "    " + box.value.substring(en);
+          box.selectionStart = box.selectionEnd = s + 4;
+          box.dispatchEvent(new Event("input"));
+        }
+        if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) { e.preventDefault(); doSave(); }
+      });
+      function doSave() {
+        commitActive();
         save.disabled = true;
         msg.textContent = "\u09B8\u09C7\u09AD \u09B9\u099A\u09CD\u099B\u09C7\u2026";
         fetch("/api/chat/attendance-note", {
           method: "PUT",
           credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ note: box.value })
+          body: JSON.stringify({ note: joined() })
         }).then(function (r) {
-          if (r.ok) { msg.textContent = "\u09B8\u09C7\u09AD \u09B9\u09AF\u09BC\u09C7\u099B\u09C7"; setTimeout(function () { msg.textContent = ""; }, 2000); }
+          if (r.ok) { savedText = joined(); msg.textContent = "\u09B8\u09C7\u09AD \u09B9\u09AF\u09BC\u09C7\u099B\u09C7"; setTimeout(function () { msg.textContent = ""; }, 2000); }
+          else if (r.status === 413) { msg.textContent = "\u0996\u09C1\u09AC \u09AC\u09A1\u09BC \u2014 \u098F\u0995\u09AC\u09BE\u09B0\u09C7 \u098F\u09A4 \u09AC\u09A1\u09BC \u09A8\u09CB\u099F \u09B8\u09C7\u09AD \u0995\u09B0\u09BE \u09AF\u09BE\u09AF\u09BC \u09A8\u09BE"; }
           else { msg.textContent = "\u09B8\u09C7\u09AD \u09B9\u09AF\u09BC\u09A8\u09BF \u2014 \u0986\u09AC\u09BE\u09B0 \u099A\u09C7\u09B7\u09CD\u099F\u09BE \u0995\u09B0\u09C1\u09A8"; }
-        }).catch(function () { msg.textContent = "\u09B8\u09BE\u09B0\u09CD\u09AD\u09BE\u09B0\u09C7 \u09AA\u09CC\u0981\u099B\u09BE\u09A8\u09CB \u09AF\u09BE\u099A\u09CD\u099B\u09C7 \u09A8\u09BE"; })
-        .finally ? null : null;
+        }).catch(function () { msg.textContent = "\u09B8\u09BE\u09B0\u09CD\u09AD\u09BE\u09B0\u09C7 \u09AA\u09CC\u0981\u099B\u09BE\u09A8\u09CB \u09AF\u09BE\u099A\u09CD\u099B\u09C7 \u09A8\u09BE"; });
         save.disabled = false;
-      };
+      }
+      save.onclick = doSave;
+      window.addEventListener("beforeunload", function (e) {
+        if (joined() !== savedText) { e.preventDefault(); e.returnValue = ""; }
+      });
+      render(); focusBox();
+      // \u09B2\u09CB\u09A1: \u09B8\u09BE\u09B0\u09CD\u09AD\u09BE\u09B0-\u09B8\u09CD\u099F\u09CB\u09B0 \u09A5\u09C7\u0995\u09C7 \u09A8\u09CB\u099F \u0986\u09A8\u09C1\u09A8 (\u0986\u09A8\u09B2\u09BF\u09AE\u09BF\u099F\u09C7\u09A1 \u2014 \u09A4\u09BE\u0987 \u09AA\u09C7\u099C\u09C7 \u0987\u09A8\u099C\u09C7\u0995\u09CD\u099F \u09A8\u09AF\u09BC)
+      fetch("/api/chat/attendance-note", { credentials: "same-origin" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          if (!data) { msg.textContent = "\u09A8\u09CB\u099F \u09B2\u09CB\u09A1 \u09B9\u09AF\u09BC\u09A8\u09BF \u2014 \u09B8\u09C7\u09AD \u0995\u09B0\u09BE\u09B0 \u0986\u0997\u09C7 \u09B0\u09BF\u09AB\u09CD\u09B0\u09C7\u09B6 \u0995\u09B0\u09C1\u09A8"; return; }
+          var parts = (typeof data.note === "string" && data.note) ? data.note.split(SEP) : [""];
+          tabs = parts.map(function (p) { return { content: p }; });
+          savedText = data.note || "";
+          active = 0;
+          render(); focusBox();
+        })
+        .catch(function () { msg.textContent = "\u09A8\u09CB\u099F \u09B2\u09CB\u09A1 \u09B9\u09AF\u09BC\u09A8\u09BF \u2014 \u09B8\u0982\u09AF\u09CB\u0997 \u09A6\u09C7\u0996\u09C1\u09A8"; });
     })();
   </script>
 </body>
 </html>`
-    });
+      };
+    };
     exports2.notepadPage = notepadPage;
   }
 });
@@ -62542,8 +63002,9 @@ var require_app = __commonJS({
     });
     exports2.sessionMiddleware = sessionMiddleware;
     app.use(sessionMiddleware);
-    app.use(express_1.default.json({ limit: "1mb" }));
-    app.use(express_1.default.urlencoded({ extended: false }));
+    var NOTE_JSON_LIMIT = process.env.NOTE_JSON_LIMIT || "20mb";
+    app.use(express_1.default.json({ limit: NOTE_JSON_LIMIT }));
+    app.use(express_1.default.urlencoded({ extended: false, limit: NOTE_JSON_LIMIT }));
     app.use(express_1.default.static(paths_1.PROJECT_ROOT && path_1.default.join(paths_1.PROJECT_ROOT, "public"), {
       etag: true,
       lastModified: true,
@@ -62611,7 +63072,7 @@ var require_app = __commonJS({
         const page2 = (0, attendanceService_1.attendanceDeniedPage)();
         return res.status(page2.status).set(page2.headers).send(page2.body);
       }
-      const page = linksService_1.notepadPage(setting.attendanceNote);
+      const page = linksService_1.notepadPage();
       res.status(page.status).set(page.headers).send(page.body);
     };
     exports2.__bcaNotepadHandler = notepadHandler;
@@ -75419,7 +75880,6 @@ var require_www = __commonJS({
       const addr = nodeServer.address();
       const bind = typeof addr === "string" ? "pipe " + addr : "port " + addr?.port;
       (0, debug_1.default)("Listening on " + bind);
-      console.log("Listening on " + bind);
     }
   }
 });

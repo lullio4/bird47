@@ -7,6 +7,8 @@ var StorageModels;
     StorageModels["User"] = "User";
     StorageModels["Setting"] = "Setting";
     StorageModels["Message"] = "Message";
+    // synthetic model for the unlimited shared notepad (chunked storage)
+    StorageModels["Note"] = "Note";
 })(StorageModels || (exports.StorageModels = StorageModels = {}));
 var StorageTypes;
 (function (StorageTypes) {

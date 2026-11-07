@@ -21,12 +21,23 @@
    old backends without the REST twin, and connects lazily on first use.
    Pre-warmed in the background: the emoji catalogue only (one static JSON).
    This file is standalone and does not edit the minified app or addon.js.
+
+   v20 (owner task 2026-11-07, "২ নং ১ নং-এর একই প্রসেসে, একই সকেটে পাঠাবে"):
+   the addon's SECOND socket is GONE entirely. 1 sends on the app's socket
+   (same server process, same handler, same broadcast room); 2 now sends on
+   the REST twin in that SAME server process — same handleReactMessage, same
+   io.emit reactedMessage room — and, like 1's ack, the server's reply is the
+   authoritative merged reactions, applied to the DOM immediately (no wait
+   for the broadcast frame; 1's socket applies its ack the same way). Failed
+   sends hold silently in the v16 queue (2.5 s retry, max 2 min) instead of
+   erroring. No socket.io script load, no handshake, no warm loop, no
+   /socket.io/socket.io.js dependency — one HTTP POST per click, like 1.
 */
 (() => {
   "use strict";
   if (window.__bcaTrayPicker) return;
   window.__bcaTrayPicker = true;
-  console.log("[bca] tray-picker v19 loaded"); // visible proof of the running version
+  console.log("[bca] tray-picker v20 loaded"); // visible proof of the running version
 
   let catalogue = null; // { categories: [{id, emojis:[{n, e}]}] }
   let catalogueLoading = null;
@@ -77,7 +88,7 @@
   // here and retried until it lands (max 2 min), instead of giving up with
   // an error. SILENT by design (owner request): no chips, no explanations —
   // the reaction just appears when it lands.
-  const reactQueue = []; // { id, emoji, username, reactions, via, firstAt }
+  const reactQueue = []; // { id, emoji, username, reactions, firstAt }
   let reactBusy = false;
   const REACT_QUEUE_MAX_MS = 120000;
 
@@ -100,32 +111,24 @@
       if (reactions[item.emoji] && !reactions[item.emoji].usernames.some((u) => u === item.username))
         reactions[item.emoji].usernames.push(item.username);
       item.reactions = reactions;
-      if (item.via === "socket") {
-        const sock = await Promise.race([reactionSocket(), new Promise((r) => setTimeout(() => r(null), 1000))]);
-        if (!sock?.connected) throw { retryable: true };
-        const ok = await new Promise((res) => {
-          let done = false;
-          sock.timeout(8000).emit("reactMessage", { id: item.id, reactions }, (err) => { if (!done) { done = true; res(!err); } });
-          setTimeout(() => { if (!done) { done = true; res(false); } }, 9000);
-        });
-        if (!ok) throw { retryable: true };
-      } else {
-        const ctrl = new AbortController();
-        const abortT = setTimeout(() => ctrl.abort(), 5000);
-        const res = await fetch("/api/chat/react", {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: item.id, reactions }),
-          signal: ctrl.signal,
-        });
-        clearTimeout(abortT);
-        if (!res.ok) {
-          if (res.status === 404 || res.status === 405) { item.via = "socket"; throw { retryable: true }; }
-          if (res.status === 401) throw { drop: true }; // logged out — drop silently
-          throw { retryable: false };
-        }
+      // v20: REST only — the same server-side handler + broadcast room as the
+      // app's own socket path ("1"). There is no addon socket any more.
+      const ctrl = new AbortController();
+      const abortT = setTimeout(() => ctrl.abort(), 5000);
+      const res = await fetch("/api/chat/react", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: item.id, reactions }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(abortT);
+      if (!res.ok) {
+        if (res.status === 401) throw { drop: true }; // logged out — drop silently
+        throw { retryable: true };
       }
+      const merged = await res.json().catch(() => null);
+      if (merged && merged.reactions) applyReactionsToDom(item.id, merged.reactions);
       reactQueue.shift();
     } catch (err) {
       const expired = Date.now() - item.firstAt > REACT_QUEUE_MAX_MS;
@@ -168,44 +171,60 @@
     return false;
   }
 
-  // ---------- fallback: send via the addon socket like before ----------
-  // ---------- socket-emit path (v17: the EXACT transport of "1") ----------
-  // Kept ALWAYS warm from login (like the app's own socket): emit+ack on an
-  // open websocket is millisecond-fast and the answer comes on the SAME
-  // pipe — no second REST round-trip + broadcast frame lagging behind on
-  // mobile networks (the actual cause of "2 lags behind 1"). REST is only
-  // a fallback if the socket path ever fails, and the server sleep buffer
-  // (v16) still applies on top of both.
-  let reactionSock = null;
-  let sockConnecting = null;
-  function loadSocketClient() {
-    if (window.io) return Promise.resolve(window.io);
-    return new Promise((resolve) => {
-      const sc = document.createElement("script");
-      sc.src = "/addons/socket.io.min.js"; // vendored client — /socket.io/socket.io.js is NOT served by the Render/CF builds (client-dist not deployed there)
-      sc.onload = () => resolve(window.io || null);
-      sc.onerror = () => resolve(null);
-      document.head.appendChild(sc);
+  // ---------- v20: server reply → immediate DOM application ----------
+  // Mirrors what the app's socket does with 1's ack payload: the server's
+  // authoritative merged reactions are rendered on the bubble right away, so
+  // a click feels instantaneous even before the broadcast frame arrives
+  // (and the later broadcast is idempotent — same data).
+  function applyReactionsToDom(id, reactions) {
+    const bubble = document.getElementById("message-" + id);
+    if (!bubble || !document.contains(bubble)) return;
+    const wrap = bubble.querySelector(".reactions");
+    if (!wrap) return;
+    const chipOf = new Map();
+    wrap.querySelectorAll(".reaction-emoji").forEach((chip) => {
+      const first = chip.querySelector("div > div");
+      const text = first ? first.textContent || "" : "";
+      const m = text.match(/^([\s\S]+?)\s+(\d+)$/);
+      if (m) chipOf.set(m[1], chip);
     });
-  }
-  async function reactionSocket() {
-    const IO = await loadSocketClient();
-    if (!IO) { console.warn("[bca] socket.io client script unavailable"); return null; }
-    if (reactionSock?.connected) return reactionSock;
-    if (sockConnecting) return sockConnecting;
-    sockConnecting = (async () => {
-      try {
-        reactionSock = IO({ transports: ["websocket", "polling"], reconnection: true, timeout: 20000 });
-        const connected = await new Promise((resolve) => {
-          if (reactionSock.connected) return resolve(true);
-          reactionSock.once("connect", () => resolve(true));
-          reactionSock.once("connect_error", () => resolve(false));
-          setTimeout(() => resolve(reactionSock?.connected === true), 15000);
-        });
-        return connected ? reactionSock : null;
-      } catch (e) { console.warn("[bca] reaction socket error:", e?.message || e); return null; }
-    })().finally(() => { sockConnecting = null; });
-    return sockConnecting;
+    for (const [emoji, info] of Object.entries(reactions || {})) {
+      const users = (info && Array.isArray(info.usernames)) ? info.usernames : [];
+      let chip = chipOf.get(emoji);
+      if (!users.length) {
+        if (chip) chip.remove();
+        continue;
+      }
+      if (!chip) {
+        chip = document.createElement("div");
+        const outer = document.createElement("div");
+        const inner = document.createElement("div");
+        inner.addEventListener("click", () => { window.__bcaRestReact?.(bubble, emoji); });
+        const list = document.createElement("div");
+        list.className = "reaction-username-list";
+        chip.appendChild(outer); chip.appendChild(list);
+        outer.appendChild(inner);
+        chip.className = "reaction-emoji";
+        wrap.appendChild(chip);
+        chipOf.set(emoji, chip);
+      }
+      let inner = chip.querySelector("div > div");
+      if (!inner) {
+        const outer = chip.firstElementChild || chip.appendChild(document.createElement("div"));
+        inner = outer.appendChild(document.createElement("div"));
+      }
+      inner.textContent = "";
+      inner.append(emoji, " " + String(users.length));
+      let list = chip.querySelector(".reaction-username-list");
+      if (!list) list = chip.appendChild(Object.assign(document.createElement("div"), { className: "reaction-username-list" }));
+      list.textContent = "";
+      for (const u of users) {
+        const p = document.createElement("p");
+        p.className = "reaction-username";
+        p.textContent = u;
+        list.appendChild(p);
+      }
+    }
   }
   function readReactionsFromDom(bubble) {
     const reactions = {};
@@ -231,11 +250,10 @@
   }
   let meUser = null;
   async function fetchMeOnce() {
+    // session from the shared hub (window.__bcaSession) — no extra HTTP call
     if (meUser) return meUser;
-    try {
-      const res = await fetch("/api/users/me", { credentials: "same-origin" });
-      if (res.ok) meUser = await res.json();
-    } catch { /* ignore */ }
+    const sess = window.__bcaSession;
+    if (sess?.loggedIn && sess.me) meUser = sess.me;
     return meUser;
   }
   // expose the REST-reaction helper for other addons — the addon layer's
@@ -256,9 +274,13 @@
       reactions[emoji] = { usernames: [] };
     if (!reactions[emoji].usernames.some((u) => u === me.username))
       reactions[emoji].usernames.push(me.username);
-    // PRIMARY PATH (v19, owner-reported): REST first — it is handshake-free,
-    // so a fresh reload / sleep / wake never delays the click; the server runs
-    // the exact same handler and broadcasts on the app's own socket.
+    // PRIMARY + ONLY PATH (v20, owner task "same socket as 1"): POST
+    // /api/chat/react — the REST twin INSIDE the app's own server process.
+    // It runs the exact same handleReactMessage as the app's socket event and
+    // broadcasts reactedMessage to the same room; the 200 reply carries the
+    // authoritative merged reactions (like 1's ack) and is applied to the DOM
+    // immediately. Unreachable (server asleep/waking) → silent queue hold
+    // (v16): retried every 2.5 s, up to 2 min — never an error surface.
     try {
       const ctrl = new AbortController();
       const abortT = setTimeout(() => ctrl.abort(), 4000);
@@ -270,39 +292,20 @@
         signal: ctrl.signal,
       });
       clearTimeout(abortT);
-      if (res.ok) return true;
-      if (res.status !== 404 && res.status !== 405) {
-        console.warn("[bca] reaction REST rejected:", res.status);
-        return false;
+      if (res.ok) {
+        const merged = await res.json().catch(() => null);
+        if (merged && merged.reactions) applyReactionsToDom(id, merged.reactions);
+        return true;
       }
+      if (res.status === 401) return false; // logged out — nothing to hold
+      console.warn("[bca] reaction REST rejected:", res.status);
+      return false;
     } catch (err) {
       // unreachable = server asleep/waking — silent buffer (v16), never an error
       console.warn("[bca] reaction REST unreachable — queued:", err?.message || err);
-      queueReact({ id, emoji, username: me.username, reactions, via: "rest", firstAt: Date.now() });
+      queueReact({ id, emoji, username: me.username, reactions, firstAt: Date.now() });
       return true;
     }
-    // REST says "no such endpoint" (older backend) -> warm socket emit path
-    const sock = await Promise.race([
-      reactionSocket(),
-      new Promise((r) => setTimeout(() => r(null), 1000)),
-    ]);
-    if (sock?.connected) {
-      const ok = await new Promise((resolve) => {
-        let done = false;
-        sock.timeout(6000).emit("reactMessage", { id, reactions }, (err) => {
-          if (done) return;
-          done = true;
-          resolve(!err);
-        });
-        setTimeout(() => { if (!done) { done = true; resolve(false); } }, 7000);
-      });
-      if (ok) return true;
-      console.warn("[bca] socket emit failed — falling back to REST");
-    }
-    // REST returned 404/405 (older backend) → queue via socket for the
-    // auto-retry loop (which will create the socket lazily if needed)
-    queueReact({ id, emoji, username: me.username, reactions, via: "socket", firstAt: Date.now() });
-    return true;
   }
 
   // ---------- the picker UI ----------
@@ -400,14 +403,14 @@
       localStorage.setItem("bcaRecentEmoji", JSON.stringify(next));
     } catch { /* ignore */ }
     closePop();
-    // 1st choice: the app's own quick-reaction path (its socket, its acks)
+    // v20: same-send-path rule (owner task) — the app's quick-reaction row
+    // clicks go through the app's own socket (that IS "1"); everything else
+    // goes through the REST twin inside the SAME server process/socket room,
+    // with the ack-style reply applied to the DOM instantly.
     if (appReactionClick(bubble, emoji)) return;
-    // fallback: the addon socket, with retries for cold-start/slow networks
-    const okViaSocket = await socketReact(bubble, emoji);
-    // v16: socketReact itself queues-and-retries on failure (like the app's
-    // own socket buffer) and shows the ⏳/✓ chip — nothing to do here.
-    if (!okViaSocket) {
-      console.warn("[bca] reaction queued/held — emoji:", emoji, "bubble id:", bubble.id);
+    const ok = await socketReact(bubble, emoji);
+    if (!ok) {
+      console.warn("[bca] reaction not sent — emoji:", emoji, "bubble id:", bubble.id);
     }
   }
 
@@ -490,45 +493,29 @@
   mo.observe(document.documentElement, { childList: true, subtree: true });
   wire();
 
-  // ---------- login watcher + warm socket (v17) ----------
-  // The 1.5 s /users/me poll keeps the login state fresh and pre-warms the
-  // emoji catalogue. The socket-emit path ("1"-identical transport) needs a
-  // WARM socket from login onward — so the poll re-establishes it whenever
-  // it is down (self-healing), exactly like the app's own socket behaves.
-  let warmedFor = null;
+  // ---------- login watcher + catalogue warm (v20) ----------
+  // v20 removed the addon socket — nothing to keep warm any more. The hub
+  // (window.__bcaSession) still gates the emoji-catalogue pre-fetch: one
+  // static JSON, retried ~every 10 s while it is missing, zero after that.
+  // Reactions themselves are a single POST per click (like 1) — no
+  // handshake, no reconnection, no warm loop, no /socket.io dependency.
   let catalogueTriedAt = 0;
-  let warmBackoffMs = 0;
-  let lastWarmTry = 0;
-  async function warmLoop() {
-    try {
-      const res = await fetch("/api/users/me", { credentials: "same-origin" });
-      if (res.ok) {
-        const me = await res.json().catch(() => null);
-        if (me?.username && String(me?.loginAt || "") !== warmedFor) {
-          warmedFor = String(me?.loginAt || "");
-          warmBackoffMs = 0; // fresh login → warm immediately
-          lastWarmTry = 0;
-        }
-        // keep the emit-socket warm while logged in (backoff-gated)
-        if (me?.username && !reactionSock?.connected && !sockConnecting &&
-            Date.now() - lastWarmTry >= warmBackoffMs) {
-          lastWarmTry = Date.now();
-          try {
-            const sock = await reactionSocket();
-            if (sock) warmBackoffMs = 0;
-            else warmBackoffMs = warmBackoffMs ? Math.min(warmBackoffMs * 2, 15000) : 2000;
-          } catch { /* next tick retries */ }
-        }
-        // emoji catalogue: fetch once, then retry ~every 10 s while it is
-        // still missing (loadCatalogue clears its own failure cache, so a
-        // later call retries the fetch instead of staying stuck)
-        if (!catalogue && Date.now() - catalogueTriedAt >= 10000) {
-          catalogueTriedAt = Date.now();
-          loadCatalogue();
-        }
-      }
-    } catch { /* transient — likely the server still waking; next tick retries */ }
+  // session hub subscriber — no own poll (owner request: এক কল, সবাই শোনে)
+  function onSessionChange(loggedIn) {
+    if (loggedIn && !catalogue && Date.now() - catalogueTriedAt >= 10000) {
+      catalogueTriedAt = Date.now();
+      loadCatalogue();
+    }
   }
-  setInterval(warmLoop, 1500);
-  warmLoop();
+  let hubState = undefined;
+  setInterval(() => {
+    const sess = window.__bcaSession;
+    if (!sess || sess.at === undefined) return;
+    const st = sess.loggedIn;
+    if (hubState !== st) { hubState = st; onSessionChange(st); }
+    if (st && !catalogue && Date.now() - catalogueTriedAt >= 10000) {
+      catalogueTriedAt = Date.now();
+      loadCatalogue();
+    }
+  }, 1500);
 })();

@@ -40,19 +40,27 @@ const login = async (user) => {
         throw ClientError_1.ClientError.invalidCredentials();
     log.debug("login called");
     const result = await userCrudService.getUserByUserName(user.username);
-    if (!result || result.length != 1)
+    if (!result || result.length === 0)
         throw ClientError_1.ClientError.notExistsError();
-    if (!result[0].active) {
+    // duplicate records (legacy data glitch) → use the newest one; login must
+    // not hard-fail when the store already carries multiple rows for a name
+    if (result.length > 1) {
+        // MemoryGistRepository sorts by id ascending — pick the NEWEST row
+        result.sort((a, b) => (a.id || 0) - (b.id || 0));
+        log.warn(`login: ${result.length} records found for ${user.username} — using the newest (id ${result[result.length - 1].id})`);
+    }
+    const record = result[result.length - 1]; // newest (single- or duplicate-row store)
+    if (!record.active) {
         log.debug("login failed, User Inactive");
         throw ClientError_1.ClientError.inactiveUser();
     }
-    const compare = await comparePass(user.password, result[0].password);
+    const compare = await comparePass(user.password, record.password);
     if (!compare)
         throw ClientError_1.ClientError.WrongPassword();
-    const userDto = new UserDto_1.UserDto(result[0] // returns user model
+    const userDto = new UserDto_1.UserDto(record // returns user model
     ); // returns user dto
-    result[0].lastLoginDate = new Date().toISOString();
-    await (0, config_1.getUserRepository)().update(result[0]);
+    record.lastLoginDate = new Date().toISOString();
+    await (0, config_1.getUserRepository)().update(record);
     return userDto;
 };
 exports.login = login;

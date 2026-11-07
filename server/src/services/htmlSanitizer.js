@@ -21,6 +21,9 @@ exports.MAX_MESSAGE_CHARS = MAX_MESSAGE_CHARS;
 const MAX_NOTICE_CHARS = parseInt(process.env.MAX_NOTICE_CHARS || "20000", 10);
 exports.MAX_NOTICE_CHARS = MAX_NOTICE_CHARS;
 const baseOptions = {
+    // `style` in allowedTags is the owner-approved HTML+CSS feature (রি-২) —
+    // the library's per-call XSS nag is silenced; sanitization behavior is unchanged.
+    allowVulnerableTags: true,
     allowedTags: [
         ...sanitize_html_1.default.defaults.allowedTags,
         "img", "audio", "video", "source", "figure", "figcaption",
